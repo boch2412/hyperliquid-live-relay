@@ -968,13 +968,17 @@ export default async function handler(
     return res
       .status(200)
       .json({
-        ok: true,
+  ok: true,
 
-        tradeAllowed:
-          true,
+  tradeAllowed:
+    true,
 
-        constraints: {
-          maxTotalMargin:
+  rankSnapshot:
+    rank,
+
+  constraints: {
+          
+          maxTotalMargi
             MAX_TOTAL_MARGIN,
 
           maxLeverage:
