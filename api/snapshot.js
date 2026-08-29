@@ -244,7 +244,10 @@ async function setupSchedule() {
     schedule = text;
   }
 
-  return { ok: true, async function saveRankPersistence() {
+return { ok: true, schedule };
+}
+
+async function saveRankPersistence() {
   const r = await fetch(
     `${BASE}/api/persist`,
     { cache: "no-store" }
