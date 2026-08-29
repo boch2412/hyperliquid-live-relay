@@ -1,4 +1,4 @@
-const BASE = "https://hyperliquid-live-relay.vercel.app";
+くconst BASE = "https://hyperliquid-live-relay.vercel.app";
 
 const COINS = [
   "BTC",
@@ -38,7 +38,22 @@ async function getIntel(coin) {
 
   return JSON.parse(text);
 }
+async function getPersistence() {
+  const r = await fetch(
+    `${BASE}/api/persistence`,
+    { cache: "no-store" }
+  );
 
+  const text = await r.text();
+
+  if (!r.ok) {
+    throw new Error(
+      `persistence ${r.status}: ${text.slice(0, 150)}`
+    );
+  }
+
+  return JSON.parse(text);
+}
 function estimateVolatility(intel) {
   const vals = [
     abs(intel?.live?.momentum?.m5?.returnPct),
@@ -672,12 +687,33 @@ export default async function handler(
         a.opportunity
     );
 
-    const actionable =
-      evaluated.filter(
-        (x) =>
-          x.bias === "LONG" ||
-          x.bias === "SHORT"
-      );
+    const persistence =
+  await getPersistence();
+
+const persistentMap =
+  new Map(
+    (
+      persistence
+        ?.persistentSignals ?? []
+    ).map(
+      (x) => [
+        x.coin,
+        x.bias,
+      ]
+    )
+  );
+
+const actionable =
+  evaluated.filter(
+    (x) =>
+      (
+        x.bias === "LONG" ||
+        x.bias === "SHORT"
+      ) &&
+      persistentMap.get(
+        x.coin
+      ) === x.bias
+  );
 
     return res
       .status(200)
@@ -693,7 +729,11 @@ export default async function handler(
           actionable[0] ?? null,
 
         tradeAllowed:
-          actionable.length > 0,
+          actionable.length > 0,persistenceReady:
+  persistence
+    ?.persistenceReady === true,
+
+persistence,
 
         ranking:
           evaluated.map(
