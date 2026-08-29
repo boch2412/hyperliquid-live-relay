@@ -247,7 +247,31 @@ async function setupSchedule() {
 return { ok: true, schedule };
 }
 
-async function saveRankPersistence() {
+async function saveDecisionLog() {
+  const r = await fetch(
+    `${BASE}/api/decision-log`,
+    { cache: "no-store" }
+  );
+
+  const text = await r.text();
+
+  if (!r.ok) {
+    return {
+      ok: false,
+      status: r.status,
+      error: text.slice(0, 200),
+    };
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: true,
+      raw: text,
+    };
+  }
+}
   const r = await fetch(
     `${BASE}/api/persist`,
     { cache: "no-store" }
@@ -310,10 +334,12 @@ export default async function handler(req, res) {
 
     const result = await saveSnapshot();
 const persistence = await saveRankPersistence();
+const decisionLog = await saveDecisionLog();
 
 return res.status(200).json({
   ...result,
   persistence,
+  decisionLog,
 });
   } catch (e) {
     return res.status(500).json({
