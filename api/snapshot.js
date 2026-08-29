@@ -24,16 +24,46 @@ async function getDynamicCoins() {
     const data = JSON.parse(text);
 
     const dynamic =
-      Array.isArray(data?.watchlist)
-        ? data.watchlist
-        : [];
+  Array.isArray(data?.watchlist)
+    ? data.watchlist
+    : [];
 
-    return [
-      ...new Set([
-        ...BASE_COINS,
-        ...dynamic,
-      ]),
-    ];
+const byAsset =
+  new Map();
+
+for (const coin of BASE_COINS) {
+  const raw =
+    String(coin);
+
+  const asset =
+    raw.includes(":")
+      ? raw.split(":").pop()
+      : raw;
+
+  byAsset.set(
+    asset.toUpperCase(),
+    coin
+  );
+}
+
+for (const coin of dynamic) {
+  const raw =
+    String(coin);
+
+  const asset =
+    raw.includes(":")
+      ? raw.split(":").pop()
+      : raw;
+
+  byAsset.set(
+    asset.toUpperCase(),
+    coin
+  );
+}
+
+return Array.from(
+  byAsset.values()
+);
   } catch (e) {
     return [...BASE_COINS];
   }
