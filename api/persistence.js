@@ -112,7 +112,300 @@ async function redis(cmd) {
     return text;
   }
 }
+const WATCHRANK_WINDOW_MS =
+  6 * 60 * 60 * 1000;
 
+const WATCHRANK_EXPECTED_SAMPLES =
+  72;
+
+async function loadWatchRank(
+  coin
+) {
+  const now =
+    Date.now();
+
+  const raw =
+    await redis([
+      "ZRANGEBYSCORE",
+
+      `hl:watchrank:${coin}`,
+
+      String(
+        now -
+          WATCHRANK_WINDOW_MS
+      ),
+
+      String(now),
+    ]);
+
+  const rows =
+    Array.isArray(
+      raw?.result
+    )
+      ? raw.result
+          .map((x) => {
+            try {
+              return JSON.parse(x);
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean)
+      : [];
+
+  return rows.sort(
+    (a, b) =>
+      Number(a?.t) -
+      Number(b?.t)
+  );
+}
+
+function evaluateWatchRank(
+  coin,
+  rows
+) {
+  if (!rows.length) {
+    return {
+      coin,
+      score: 0.5,
+      samples: 0,
+      appearanceRate: null,
+      consecutive: 0,
+      rankTrend: 0,
+      scoreTrend: 0,
+      firstRank: null,
+      latestRank: null,
+      firstScore: null,
+      latestScore: null,
+      historyReady: false,
+    };
+  }
+
+  const first =
+    rows[0];
+
+  const latest =
+    rows[
+      rows.length - 1
+    ];
+
+  let consecutive = 1;
+
+  for (
+    let i =
+      rows.length - 1;
+    i > 0;
+    i--
+  ) {
+    const gap =
+      Number(
+        rows[i]?.t
+      ) -
+      Number(
+        rows[
+          i - 1
+        ]?.t
+      );
+
+    if (
+      gap <=
+      7 * 60 * 1000
+    ) {
+      consecutive++;
+    } else {
+      break;
+    }
+  }
+
+  const appearanceRate =
+    Math.min(
+      1,
+      rows.length /
+        WATCHRANK_EXPECTED_SAMPLES
+    );
+
+  const firstRank =
+    Number(
+      first?.rank
+    );
+
+  const latestRank =
+    Number(
+      latest?.rank
+    );
+
+  const rankTrend =
+    Number.isFinite(
+      firstRank
+    ) &&
+    Number.isFinite(
+      latestRank
+    )
+      ? firstRank -
+        latestRank
+      : 0;
+
+  const firstScore =
+    Number(
+      first?.stage1Score
+    );
+
+  const latestScore =
+    Number(
+      latest?.stage1Score
+    );
+
+  const scoreTrend =
+    Number.isFinite(
+      firstScore
+    ) &&
+    Number.isFinite(
+      latestScore
+    )
+      ? latestScore -
+        firstScore
+      : 0;
+
+  const appearanceComponent =
+    appearanceRate;
+
+  const consecutiveComponent =
+    Math.min(
+      1,
+      consecutive / 12
+    );
+
+  const rankComponent =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        0.5 +
+          rankTrend / 20
+      )
+    );
+
+  const scoreComponent =
+    Math.max(
+      0,
+      Math.min(
+        1,
+        0.5 +
+          scoreTrend * 5
+      )
+    );
+
+  const rawScore =
+    appearanceComponent *
+      0.35 +
+    consecutiveComponent *
+      0.30 +
+    rankComponent *
+      0.20 +
+    scoreComponent *
+      0.15;
+
+  const historyReady =
+    rows.length >= 3;
+
+  return {
+    coin,
+
+    score:
+      historyReady
+        ? rawScore
+        : 0.5,
+
+    rawScore,
+
+    samples:
+      rows.length,
+
+    appearanceRate,
+
+    consecutive,
+
+    rankTrend,
+
+    scoreTrend,
+
+    firstRank:
+      first?.rank ??
+      null,
+
+    latestRank:
+      latest?.rank ??
+      null,
+
+    firstScore:
+      first?.stage1Score ??
+      null,
+
+    latestScore:
+      latest?.stage1Score ??
+      null,
+
+    historyReady,
+  };
+}
+
+async function getWatchRankResults() {
+  const rankResponse =
+    await fetch(
+      "https://hyperliquid-live-relay.vercel.app/api/rank?mode=screener&limit=18",
+      {
+        cache:
+          "no-store",
+      }
+    );
+
+  const text =
+    await rankResponse.text();
+
+  if (!rankResponse.ok) {
+    throw new Error(
+      `rank ${rankResponse.status}: ${text.slice(
+        0,
+        200
+      )}`
+    );
+  }
+
+  const data =
+    JSON.parse(text);
+
+  const watchlist =
+    Array.isArray(
+      data?.watchlist
+    )
+      ? data.watchlist
+      : [];
+
+  const results =
+    [];
+
+  for (
+    const coin of watchlist
+  ) {
+    const rows =
+      await loadWatchRank(
+        coin
+      );
+
+    results.push(
+      evaluateWatchRank(
+        coin,
+        rows
+      )
+    );
+  }
+
+  return results.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+}
 function parseRecord(v) {
   if (!v) {
     return null;
@@ -544,6 +837,60 @@ export default async function handler(
   );
 
   try {
+    const mode =
+  String(
+    req.query.mode ||
+      ""
+  ).trim();
+
+if (
+  mode ===
+  "watchrank"
+) {
+  const ranking =
+    await getWatchRankResults();
+
+  const requestedCoin =
+    String(
+      req.query.coin ||
+        ""
+    ).trim();
+
+  const filtered =
+    requestedCoin
+      ? ranking.filter(
+          (x) =>
+            x.coin ===
+            requestedCoin
+        )
+      : ranking;
+
+  return res
+    .status(200)
+    .json({
+      ok: true,
+
+      generatedAt:
+        Date.now(),
+
+      mode:
+        "watchrank",
+
+      windowHours: 6,
+
+      expectedSamples:
+        WATCHRANK_EXPECTED_SAMPLES,
+
+      historyReady:
+        filtered.some(
+          (x) =>
+            x.historyReady
+        ),
+
+      ranking:
+        filtered,
+    });
+}
     const requested =
       String(
         req.query.coin ||
