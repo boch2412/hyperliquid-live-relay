@@ -1,4 +1,4 @@
-くconst BASE = "https://hyperliquid-live-relay.vercel.app";
+const BASE = "https://hyperliquid-live-relay.vercel.app";
 
 const COINS = [
   "BTC",
