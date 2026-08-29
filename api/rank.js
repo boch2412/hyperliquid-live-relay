@@ -629,11 +629,52 @@ async function runUniverseScreener(
           a.stage1Score
       );
 
-  const shortlist =
-    stage1.slice(
-      0,
-      limit
+  const bestByAsset =
+  new Map();
+
+for (const row of stage1) {
+  const rawCoin =
+    String(
+      row?.coin ?? ""
     );
+
+  const asset =
+    rawCoin.includes(":")
+      ? rawCoin.split(":").pop()
+      : rawCoin;
+
+  const key =
+    asset.toUpperCase();
+
+  const current =
+    bestByAsset.get(key);
+
+  if (
+    !current ||
+    row.stage1Score >
+      current.stage1Score
+  ) {
+    bestByAsset.set(
+      key,
+      row
+    );
+  }
+}
+
+const dedupedStage1 =
+  Array.from(
+    bestByAsset.values()
+  ).sort(
+    (a, b) =>
+      b.stage1Score -
+      a.stage1Score
+  );
+
+const shortlist =
+  dedupedStage1.slice(
+    0,
+    limit
+  );
 
   const deepRaw =
     await mapLimit(
@@ -771,6 +812,9 @@ async function runUniverseScreener(
       universeCompared:
         stage1.length,
 
+      uniqueAssets:
+  dedupedStage1.length,
+      
       deepChecked:
         shortlist.length,
 
