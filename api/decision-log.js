@@ -98,25 +98,47 @@ async function redis(cmd) {
   }
 }
 
-async function getPlan() {
-  const r = await fetch(
-    `${BASE}/api/plan`,
-    {
-      cache: "no-store",
+async function loadLatestRanks() {
+  const coins = [
+    "BTC",
+    "SUI",
+    "xyz:MU",
+    "xyz:SNDK",
+    "xyz:SKHX",
+  ];
+
+  const rows = [];
+
+  for (const coin of coins) {
+    const raw = await redis([
+      "ZREVRANGE",
+      `hl:rank:${coin}`,
+      "0",
+      "0",
+    ]);
+
+    const values =
+      Array.isArray(raw?.result)
+        ? raw.result
+        : [];
+
+    if (!values.length) {
+      continue;
     }
-  );
 
-  const text =
-    await r.text();
+    try {
+      const row =
+        typeof values[0] === "string"
+          ? JSON.parse(values[0])
+          : values[0];
 
-  if (!r.ok) {
-    throw new Error(
-      `/api/plan ${r.status}: ` +
-      text.slice(0, 200)
-    );
+      if (row) {
+        rows.push(row);
+      }
+    } catch {}
   }
 
-  return JSON.parse(text);
+  return rows;
 }
 
 function compactDecision(d) {
@@ -238,93 +260,147 @@ export default async function handler(
   );
 
   try {
-   const plan =
-  await getPlan();
 
-const rank =
-  plan?.rankSnapshot ??
-  plan?.rank ??
+const ranks =
+  await loadLatestRanks();
+
+const actionable =
+  ranks
+    .filter(
+      (x) =>
+        x?.bias === "LONG" ||
+        x?.bias === "SHORT"
+    )
+    .sort(
+      (a, b) =>
+        Number(
+          b?.opportunity ?? 0
+        ) -
+        Number(
+          a?.opportunity ?? 0
+        )
+    );
+
+const best =
+  actionable[0] ??
+  ranks[0] ??
   null;
 
-const persistence =
-  rank?.persistence ??
-  null;
+const tradeAllowed =
+  actionable.length > 0;
 
 const decision = {
   generatedAt:
     Date.now(),
 
   sourceGeneratedAt:
-    plan?.generatedAt ??
-    rank?.generatedAt ??
-    null,
+    best?.t ??
+    Date.now(),
 
   decision:
-    plan?.tradeAllowed === true
-      ? (
-          Array.isArray(plan?.plans) &&
-          plan.plans.length === 1
-            ? `${plan.plans[0].side} ${plan.plans[0].coin}`
-            : `${plan.plans?.length ?? 0} TRADES`
-        )
+    tradeAllowed
+      ? `${best.bias} ${best.coin}`
       : "NO TRADE",
 
-  tradeAllowed:
-    plan?.tradeAllowed === true,
+  tradeAllowed,
 
   reason:
-    plan?.tradeAllowed === true
+    tradeAllowed
       ? null
-      : plan?.reason ??
-        "no_actionable_signal",
+      : "no_actionable_signal",
 
   summary: {
     bestCoin:
-      rank?.bestActionable?.coin ??
-      rank?.best?.coin ??
+      best?.coin ??
       null,
 
     bestBias:
-      rank?.bestActionable?.bias ??
-      rank?.best?.bias ??
+      best?.bias ??
       null,
 
     bestConfidencePct:
-      rank?.bestActionable?.confidence ??
-      rank?.best?.confidence ??
+      best?.confidence ??
       null,
 
     bestScore:
-      rank?.bestActionable?.compositeScore ??
-      rank?.best?.compositeScore ??
+      best?.compositeScore ??
       null,
 
-    persistentSignals:
-      persistence?.persistentSignals ??
-      [],
+    persistentSignals: [],
   },
 
   plans:
-    Array.isArray(plan?.plans)
-      ? plan.plans
+    tradeAllowed
+      ? [
+          {
+            coin:
+              best?.coin,
+
+            side:
+              best?.bias,
+
+            confidencePct:
+              best?.confidence,
+
+            compositeScore:
+              best?.compositeScore,
+
+            marginUsd:
+              null,
+
+            leverage:
+              null,
+
+            entry: {
+              ideal:
+                null,
+
+              aggressiveLimit:
+                null,
+            },
+
+            stopLoss: {
+              price:
+                null,
+
+              riskUsd:
+                null,
+            },
+
+            takeProfit: {
+              tp1: {
+                price:
+                  null,
+              },
+
+              tp2: {
+                price:
+                  null,
+              },
+            },
+          },
+        ]
       : [],
 
   system: {
     planOk:
-      plan?.ok === true,
+      false,
 
     rankEmbedded:
-      rank != null,
+      true,
 
     persistenceEmbedded:
-      persistence != null,
+      false,
+
+    source:
+      "redis_rank_snapshot",
   },
 };
 
 const record =
   compactDecision(
     decision
-  ); 
+  );
 
     const key =
       "hl:decision";
