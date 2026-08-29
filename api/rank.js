@@ -807,7 +807,28 @@ const shortlist =
       shortlist.map(
         (x) => x.coin
       ),
-    
+    watchlistDetails:
+  shortlist.map(
+    (x, index) => ({
+      coin:
+        x.coin,
+
+      rank:
+        index + 1,
+
+      stage1Score:
+        x.stage1Score,
+
+      dex:
+        x.dex ?? null,
+
+      dayNtlVlm:
+        x.dayNtlVlm ?? null,
+
+      oiNotional:
+        x.oiNotional ?? null,
+    })
+  ),
     methodology: {
       universeCompared:
         stage1.length,
