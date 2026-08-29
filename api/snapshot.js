@@ -272,7 +272,7 @@ async function saveDecisionLog() {
     };
   }
 }
-  }
+  
 
 async function saveRankPersistence() {
   const r = await fetch(
