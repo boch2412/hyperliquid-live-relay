@@ -241,8 +241,16 @@ export default async function handler(
   );
 
   try {
-    const coin =
-      String(req.query.coin || "").trim();
+    const url = new URL(
+  req.url,
+  "https://hyperliquid-live-relay.vercel.app"
+);
+
+const coin = String(
+  url.searchParams.get("coin") || ""
+)
+  .trim()
+  .toUpperCase();
 
     if (!coin) {
       return res.status(400).json({
