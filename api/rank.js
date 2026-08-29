@@ -13,9 +13,6 @@ const COINS = [
   "xyz:SNDK",
   "xyz:SKHX",
 ];
-const COINS = [
-  ...
-];
 
 async function getPersistenceScore(
   coin
