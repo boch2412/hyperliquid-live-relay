@@ -1,4 +1,4 @@
-const BASE = "https://hyperliquid-live-relay.vercel.app";
+// Vercel auto-deploy enabledconst BASE = "https://hyperliquid-live-relay.vercel.app";
 
 function normalizeCoin(v) {
   return String(v || "").trim();
