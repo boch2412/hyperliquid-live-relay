@@ -29,14 +29,9 @@ function round(v, digits = 2) {
     return null;
   }
 
-  const p =
-    10 ** digits;
+  const p = 10 ** digits;
 
-  return (
-    Math.round(
-      x * p
-    ) / p
-  );
+  return Math.round(x * p) / p;
 }
 
 function simplifyPlan(plan) {
@@ -86,8 +81,7 @@ function simplifyPlan(plan) {
 
       spreadBps:
         round(
-          plan.market
-            ?.spreadBps,
+          plan.market?.spreadBps,
           2
         ),
     },
@@ -102,15 +96,13 @@ function simplifyPlan(plan) {
 
       pullbackPct:
         round(
-          plan.entry
-            ?.pullbackPct,
+          plan.entry?.pullbackPct,
           3
         ),
 
       chaseAllowed:
         plan.entry
-          ?.chaseAllowed ===
-        true,
+          ?.chaseAllowed === true,
     },
 
     stopLoss: {
@@ -119,8 +111,7 @@ function simplifyPlan(plan) {
 
       distancePct:
         round(
-          plan.risk
-            ?.stopPct,
+          plan.risk?.stopPct,
           3
         ),
 
@@ -146,8 +137,7 @@ function simplifyPlan(plan) {
 
         movePct:
           round(
-            plan.targets
-              ?.tp1Pct,
+            plan.targets?.tp1Pct,
             3
           ),
 
@@ -157,8 +147,7 @@ function simplifyPlan(plan) {
 
         rr:
           round(
-            plan.targets
-              ?.rr1,
+            plan.targets?.rr1,
             2
           ),
       },
@@ -169,8 +158,7 @@ function simplifyPlan(plan) {
 
         movePct:
           round(
-            plan.targets
-              ?.tp2Pct,
+            plan.targets?.tp2Pct,
             3
           ),
 
@@ -180,8 +168,7 @@ function simplifyPlan(plan) {
 
         rr:
           round(
-            plan.targets
-              ?.rr2,
+            plan.targets?.rr2,
             2
           ),
       },
@@ -200,18 +187,14 @@ function decisionText(
     return "NO TRADE";
   }
 
-  if (
-    plans.length === 1
-  ) {
+  if (plans.length === 1) {
     return (
       `${plans[0].side} ` +
       `${plans[0].coin}`
     );
   }
 
-  return (
-    `${plans.length} TRADES`
-  );
+  return `${plans.length} TRADES`;
 }
 
 export default async function handler(
@@ -224,30 +207,28 @@ export default async function handler(
   );
 
   try {
-    const [
-      rank,
-      plan,
-      persistence,
-    ] =
-      await Promise.all([
-        getJSON(
-          "/api/rank"
-        ),
+    /*
+      planを唯一の判定元にする。
+      これでrank / persistenceとの
+      時刻ズレを防ぐ。
+    */
+    const plan =
+      await getJSON(
+        "/api/plan"
+      );
 
-        getJSON(
-          "/api/plan"
-        ),
+    const rank =
+      plan?.rankSnapshot ??
+      plan?.rank ??
+      null;
 
-        getJSON(
-          "/api/persistence"
-        ),
-      ]);
+    const persistence =
+      rank?.persistence ??
+      null;
 
     const tradeAllowed =
-      rank?.tradeAllowed ===
-        true &&
       plan?.tradeAllowed ===
-        true;
+      true;
 
     const rawPlans =
       Array.isArray(
@@ -262,8 +243,8 @@ export default async function handler(
       );
 
     const best =
-      rank
-        ?.bestActionable ??
+      rank?.bestActionable ??
+      rank?.best ??
       null;
 
     const persistent =
@@ -275,8 +256,11 @@ export default async function handler(
             .persistentSignals
         : [];
 
-    const now =
-      Date.now();
+    const reason =
+      tradeAllowed
+        ? null
+        : plan?.reason ??
+          "no_actionable_signal";
 
     return res
       .status(200)
@@ -284,7 +268,12 @@ export default async function handler(
         ok: true,
 
         generatedAt:
-          now,
+          Date.now(),
+
+        sourceGeneratedAt:
+          plan?.generatedAt ??
+          rank?.generatedAt ??
+          null,
 
         decision:
           decisionText(
@@ -293,6 +282,8 @@ export default async function handler(
           ),
 
         tradeAllowed,
+
+        reason,
 
         summary: {
           actionableCount:
@@ -308,8 +299,7 @@ export default async function handler(
 
           bestConfidencePct:
             round(
-              best
-                ?.confidence,
+              best?.confidence,
               1
             ),
 
@@ -366,22 +356,17 @@ export default async function handler(
         noTradeReasons:
           tradeAllowed
             ? []
-            : [
-                "rank_not_confirmed",
-                "persistence_not_confirmed",
-                "plan_not_actionable",
-              ],
+            : [reason],
 
         system: {
-          rankOk:
-            rank?.ok === true,
-
           planOk:
             plan?.ok === true,
 
-          persistenceOk:
-            persistence
-              ?.ok === true,
+          rankEmbedded:
+            rank != null,
+
+          persistenceEmbedded:
+            persistence != null,
         },
       });
   } catch (e) {
