@@ -168,7 +168,14 @@ export default async function handler(
           row
             ?.executionQuality
             ?.score ?? null,
+volatility:
+  row?.volatility ?? null,
 
+executionQuality:
+  row?.executionQuality ?? null,
+
+marketSnapshot:
+  row?.marketSnapshot ?? null,
         reasons:
           row.reasons ?? [],
       };
