@@ -1,5 +1,3 @@
-const BASE = "https://hyperliquid-live-relay.vercel.app";
-
 const COINS = [
   "BTC",
   "SUI",
@@ -11,7 +9,11 @@ const COINS = [
 const LOOKBACK_MS = 30 * 60 * 1000;
 const MAX_RECORDS = 6;
 const KEEP_MS = 30 * 24 * 60 * 60 * 1000;
-
+const MAX_TOTAL_MARGIN = 5000;
+const MAX_LEVERAGE = 10;
+const MAX_PORTFOLIO_STOP_RISK_USD =
+  MAX_TOTAL_MARGIN * 0.01;
+const MAX_POSITIONS = 3;
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
