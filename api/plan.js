@@ -978,7 +978,7 @@ export default async function handler(
 
   constraints: {
           
-          maxTotalMargi
+          maxTotalMargin:
             MAX_TOTAL_MARGIN,
 
           maxLeverage:
