@@ -61,9 +61,110 @@ for (const coin of dynamic) {
   );
 }
 
-return Array.from(
-  byAsset.values()
-);
+const current =
+  Array.from(
+    byAsset.values()
+  );
+
+try {
+  const now =
+    Date.now();
+
+  const recentKey =
+    "hl:watchlist:recent";
+
+  if (current.length) {
+    const zadd = [
+      "ZADD",
+      recentKey,
+    ];
+
+    for (const coin of current) {
+      zadd.push(
+        String(now),
+        coin
+      );
+    }
+
+    await redis(zadd);
+  }
+
+  await redis([
+    "ZREMRANGEBYSCORE",
+    recentKey,
+    "0",
+    String(
+      now -
+        6 * 60 * 60 * 1000
+    ),
+  ]);
+
+  const recentRaw =
+    await redis([
+      "ZREVRANGE",
+      recentKey,
+      "0",
+      "35",
+    ]);
+
+  const recent =
+    Array.isArray(
+      recentRaw?.result
+    )
+      ? recentRaw.result
+      : [];
+
+  const rollingByAsset =
+    new Map();
+
+  for (const coin of recent) {
+    const raw =
+      String(coin);
+
+    const asset =
+      raw.includes(":")
+        ? raw.split(":").pop()
+        : raw;
+
+    const key =
+      asset.toUpperCase();
+
+    if (
+      !rollingByAsset.has(
+        key
+      )
+    ) {
+      rollingByAsset.set(
+        key,
+        coin
+      );
+    }
+  }
+
+  for (const coin of current) {
+    const raw =
+      String(coin);
+
+    const asset =
+      raw.includes(":")
+        ? raw.split(":").pop()
+        : raw;
+
+    rollingByAsset.set(
+      asset.toUpperCase(),
+      coin
+    );
+  }
+
+  return Array.from(
+    rollingByAsset.values()
+  ).slice(
+    0,
+    36
+  );
+} catch {
+  return current;
+}
   } catch (e) {
     return [...BASE_COINS];
   }
