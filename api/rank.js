@@ -13,6 +13,44 @@ const COINS = [
   "xyz:SNDK",
   "xyz:SKHX",
 ];
+const COINS = [
+  ...
+];
+
+async function getPersistenceScore(
+  coin
+) {
+  try {
+    const r =
+      await fetch(
+        `${BASE}/api/persistence?mode=watchrank&coin=${encodeURIComponent(
+          coin
+        )}`,
+        {
+          cache: "no-store",
+        }
+      );
+
+    if (!r.ok) {
+      return 0.5;
+    }
+
+    const data =
+      await r.json();
+
+    const score =
+      Number(
+        data?.ranking?.[0]?.score
+      );
+
+    return Number.isFinite(score)
+      ? score
+      : 0.5;
+  } catch {
+    return 0.5;
+  }
+}
+
 async function postHlInfo(payload) {
   const r = await fetch(
     HL_INFO,
@@ -688,11 +726,16 @@ const shortlist =
             );
 
           const evaluated =
-            evaluate(
-              intel
-            );
+  evaluate(
+    intel
+  );
 
-          return {
+const persistenceScore =
+  await getPersistenceScore(
+    row.coin
+  );
+
+return {
             ok: true,
 
             result: {
@@ -705,8 +748,13 @@ const shortlist =
               screenerScore:
   screenerFinalScore(
     evaluated,
-    row.stage1Score,
-  ),
+    row.stage1Score
+  ) *
+    0.90 +
+  persistenceScore *
+    0.10,
+
+persistenceScore,
 
               universeData: {
                 dex:
