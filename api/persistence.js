@@ -162,7 +162,8 @@ async function loadWatchRank(
 
 function evaluateWatchRank(
   coin,
-  rows
+  rows,
+  expectedSamples
 ) {
   if (!rows.length) {
     return {
@@ -217,12 +218,23 @@ function evaluateWatchRank(
     }
   }
 
-  const appearanceRate =
+  const effectiveExpectedSamples =
+  Math.max(
+    3,
     Math.min(
-      1,
-      rows.length /
-        WATCHRANK_EXPECTED_SAMPLES
-    );
+      WATCHRANK_EXPECTED_SAMPLES,
+      Number(
+        expectedSamples
+      ) || 3
+    )
+  );
+
+const appearanceRate =
+  Math.min(
+    1,
+    rows.length /
+      effectiveExpectedSamples
+  );
 
   const firstRank =
     Number(
@@ -381,26 +393,49 @@ async function getWatchRankResults() {
       ? data.watchlist
       : [];
 
-  const results =
-    [];
+  const loaded =
+  [];
 
-  for (
-    const coin of watchlist
-  ) {
-    const rows =
-      await loadWatchRank(
-        coin
-      );
+for (
+  const coin of watchlist
+) {
+  const rows =
+    await loadWatchRank(
+      coin
+    );
 
-    results.push(
+  loaded.push({
+    coin,
+    rows,
+  });
+}
+
+const observedMaxSamples =
+  Math.max(
+    3,
+    ...loaded.map(
+      (x) =>
+        x.rows.length
+    )
+  );
+
+const effectiveExpectedSamples =
+  Math.min(
+    WATCHRANK_EXPECTED_SAMPLES,
+    observedMaxSamples
+  );
+
+const results =
+  loaded.map(
+    ({ coin, rows }) =>
       evaluateWatchRank(
         coin,
-        rows
+        rows,
+        effectiveExpectedSamples
       )
-    );
-  }
+  );
 
-  return results.sort(
+return results.sort(
     (a, b) =>
       b.score -
       a.score
