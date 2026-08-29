@@ -1,5 +1,8 @@
 const BASE = "https://hyperliquid-live-relay.vercel.app";
+const HL_INFO =
+  "https://api.hyperliquid.xyz/info";
 
+const UNIVERSE_DEX_CONCURRENCY = 4;
 const COINS = [
   "BTC",
   "SUI",
@@ -7,7 +10,438 @@ const COINS = [
   "xyz:SNDK",
   "xyz:SKHX",
 ];
+async function postHlInfo(payload) {
+  const r = await fetch(
+    HL_INFO,
+    {
+      method: "POST",
 
+      headers: {
+        "content-type":
+          "application/json",
+      },
+
+      body:
+        JSON.stringify(
+          payload
+        ),
+
+      cache:
+        "no-store",
+    }
+  );
+
+  const text =
+    await r.text();
+
+  if (!r.ok) {
+    throw new Error(
+      `HL ${r.status}: ${text.slice(
+        0,
+        200
+      )}`
+    );
+  }
+
+  return JSON.parse(text);
+}
+
+function baseName(s) {
+  const x =
+    String(s || "");
+
+  return x.includes(":")
+    ? x.split(":").pop()
+    : x;
+}
+
+function parseMetaCtx(resp) {
+  if (
+    !Array.isArray(resp) ||
+    resp.length < 2
+  ) {
+    return {
+      universe: [],
+      ctxs: [],
+    };
+  }
+
+  return {
+    universe:
+      Array.isArray(
+        resp?.[0]?.universe
+      )
+        ? resp[0].universe
+        : [],
+
+    ctxs:
+      Array.isArray(
+        resp?.[1]
+      )
+        ? resp[1]
+        : [],
+  };
+}
+
+function makeUniverseRows(
+  parsed,
+  dex
+) {
+  const rows = [];
+
+  for (
+    let i = 0;
+    i < parsed.universe.length;
+    i++
+  ) {
+    const meta =
+      parsed.universe[i];
+
+    const ctx =
+      parsed.ctxs[i] ?? null;
+
+    const rawName =
+      meta?.name;
+
+    if (!rawName) {
+      continue;
+    }
+
+    const coin =
+      dex
+        ? (
+            String(rawName)
+              .includes(":")
+              ? String(rawName)
+              : `${dex}:${baseName(
+                  rawName
+                )}`
+          )
+        : String(rawName);
+
+    const markPx =
+      n(ctx?.markPx);
+
+    const oi =
+      n(
+        ctx?.openInterest
+      );
+
+    const volume =
+      n(
+        ctx?.dayNtlVlm
+      );
+
+    const oiNotional =
+      markPx != null &&
+      oi != null
+        ? markPx * oi
+        : null;
+
+    const isDelisted =
+      meta?.isDelisted === true ||
+      meta?.delisted === true;
+
+    const liquidityScore =
+      Math.log10(
+        1 +
+        Math.max(
+          0,
+          volume ?? 0
+        )
+      ) *
+        0.7 +
+      Math.log10(
+        1 +
+        Math.max(
+          0,
+          oiNotional ?? 0
+        )
+      ) *
+        0.3;
+
+    rows.push({
+      coin,
+
+      base:
+        baseName(rawName),
+
+      dex:
+        dex || null,
+
+      native:
+        !dex,
+
+      tradable:
+        !isDelisted,
+
+      markPx,
+
+      funding:
+        n(ctx?.funding),
+
+      openInterest:
+        oi,
+
+      oiNotional,
+
+      dayNtlVlm:
+        volume,
+
+      maxLeverage:
+        n(
+          meta?.maxLeverage
+        ),
+
+      liquidityScore,
+    });
+  }
+
+  return rows;
+}
+
+async function fetchDexRows(
+  dex
+) {
+  try {
+    const raw =
+      await postHlInfo({
+        type:
+          "metaAndAssetCtxs",
+
+        dex,
+      });
+
+    return {
+      ok: true,
+      dex,
+
+      rows:
+        makeUniverseRows(
+          parseMetaCtx(raw),
+          dex
+        ),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      dex,
+      rows: [],
+      error:
+        String(e),
+    };
+  }
+}
+
+async function mapLimit(
+  items,
+  limit,
+  fn
+) {
+  const out =
+    new Array(
+      items.length
+    );
+
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const i =
+        cursor++;
+
+      if (
+        i >=
+        items.length
+      ) {
+        return;
+      }
+
+      out[i] =
+        await fn(
+          items[i]
+        );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      {
+        length:
+          Math.min(
+            limit,
+            items.length
+          ),
+      },
+      worker
+    )
+  );
+
+  return out;
+}
+
+async function getUniverseRanking() {
+  const nativeRaw =
+    await postHlInfo({
+      type:
+        "metaAndAssetCtxs",
+    });
+
+  const nativeRows =
+    makeUniverseRows(
+      parseMetaCtx(
+        nativeRaw
+      ),
+      ""
+    );
+
+  let dexRaw = [];
+
+  try {
+    dexRaw =
+      await postHlInfo({
+        type:
+          "perpDexs",
+      });
+  } catch {}
+
+  const discoveredDexes =
+    Array.isArray(dexRaw)
+      ? dexRaw
+          .map(
+            (x) =>
+              typeof x ===
+              "string"
+                ? x
+                : (
+                    x?.name ||
+                    x?.dex ||
+                    x?.symbol ||
+                    x?.id ||
+                    null
+                  )
+          )
+          .filter(Boolean)
+          .map(String)
+      : [];
+
+  const dexes = [
+    ...new Set([
+      "xyz",
+      ...discoveredDexes,
+    ]),
+  ].filter(Boolean);
+
+  const dexResults =
+    await mapLimit(
+      dexes,
+      UNIVERSE_DEX_CONCURRENCY,
+      fetchDexRows
+    );
+
+  const allRows = [
+    ...nativeRows,
+
+    ...dexResults.flatMap(
+      (x) =>
+        x?.rows ?? []
+    ),
+  ];
+
+  const deduped =
+    new Map();
+
+  for (
+    const row of allRows
+  ) {
+    if (!row?.coin) {
+      continue;
+    }
+
+    const old =
+      deduped.get(
+        row.coin
+      );
+
+    if (
+      !old ||
+      (
+        row.dayNtlVlm ?? 0
+      ) >
+        (
+          old.dayNtlVlm ?? 0
+        )
+    ) {
+      deduped.set(
+        row.coin,
+        row
+      );
+    }
+  }
+
+  const ranking = [
+    ...deduped.values(),
+  ]
+    .filter(
+      (x) =>
+        x.tradable
+    )
+    .sort(
+      (a, b) =>
+        (
+          b.liquidityScore ??
+          0
+        ) -
+        (
+          a.liquidityScore ??
+          0
+        )
+    );
+
+  return {
+    ok: true,
+
+    generatedAt:
+      Date.now(),
+
+    counts: {
+      total:
+        ranking.length,
+
+      native:
+        nativeRows.length,
+
+      dexesChecked:
+        dexes.length,
+
+      dexesFailed:
+        dexResults.filter(
+          (x) =>
+            !x?.ok
+        ).length,
+    },
+
+    dexes,
+
+    failedDexes:
+      dexResults
+        .filter(
+          (x) =>
+            !x?.ok
+        )
+        .map(
+          (x) => ({
+            dex:
+              x.dex,
+
+            error:
+              x.error,
+          })
+        ),
+
+    ranking,
+  };
+}
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
@@ -672,7 +1106,34 @@ export default async function handler(
     "Cache-Control",
     "no-store"
   );
+  const url = new URL(
+    req.url,
+    BASE
+  );
 
+  const mode =
+    url.searchParams.get("mode");
+
+  if (mode === "universe") {
+    try {
+      const universe =
+        await getUniverseRanking();
+
+      return res
+        .status(200)
+        .json(universe);
+    } catch (e) {
+      return res
+        .status(500)
+        .json({
+          ok: false,
+          error:
+            String(e),
+          generatedAt:
+            Date.now(),
+        });
+    }
+  }
   try {
     const results =
       await Promise.allSettled(
