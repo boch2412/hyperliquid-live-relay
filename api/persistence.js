@@ -280,13 +280,12 @@ const appearanceRate =
 
   const appearanceComponent =
     appearanceRate;
-
-  const consecutiveComponent =
-    Math.min(
-      1,
-      consecutive / 12
-    );
-
+const consecutiveComponent =
+  Math.min(
+    1,
+    consecutive /
+      effectiveExpectedSamples
+  );
   const rankComponent =
     Math.max(
       0,
