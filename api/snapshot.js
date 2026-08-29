@@ -1,5 +1,43 @@
 const BASE = "https://hyperliquid-live-relay.vercel.app";
-const COINS = ["BTC", "SUI", "xyz:MU", "xyz:SNDK", "xyz:SKHX"];
+const BASE_COINS = [
+  "BTC",
+  "SUI",
+  "xyz:MU",
+  "xyz:SNDK",
+  "xyz:SKHX",
+];
+async function getDynamicCoins() {
+  try {
+    const r = await fetch(
+      `${BASE}/api/rank?mode=screener&limit=18`,
+      { cache: "no-store" }
+    );
+
+    const text = await r.text();
+
+    if (!r.ok) {
+      throw new Error(
+        `screener ${r.status}: ${text.slice(0, 200)}`
+      );
+    }
+
+    const data = JSON.parse(text);
+
+    const dynamic =
+      Array.isArray(data?.watchlist)
+        ? data.watchlist
+        : [];
+
+    return [
+      ...new Set([
+        ...BASE_COINS,
+        ...dynamic,
+      ]),
+    ];
+  } catch (e) {
+    return [...BASE_COINS];
+  }
+}
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 
 function envFirst(names) {
@@ -132,9 +170,10 @@ async function saveSnapshot() {
       reason: "snapshot already taken recently",
     };
   }
-
+const dynamicCoins =
+  await getDynamicCoins();
   const quotes = await Promise.all(
-    COINS.map(async (coin) => {
+    dynamicCoins.map(async (coin) => {
       try {
         return { coin, q: await quote(coin) };
       } catch (e) {
@@ -196,11 +235,22 @@ async function saveSnapshot() {
   }
 
   return {
-    ok: true,
-    t: now,
-    saved,
-    errors,
-  };
+  ok: true,
+  t: now,
+
+  watchlist:
+    dynamicCoins,
+
+  watchlistCount:
+    dynamicCoins.length,
+
+  saved,
+
+  savedCount:
+    saved.length,
+
+  errors,
+};
 }
 
 async function setupSchedule() {
