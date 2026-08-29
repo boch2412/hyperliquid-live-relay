@@ -98,9 +98,9 @@ async function redis(cmd) {
   }
 }
 
-async function getDecision() {
+async function getPlan() {
   const r = await fetch(
-    `${BASE}/api/decision`,
+    `${BASE}/api/plan`,
     {
       cache: "no-store",
     }
@@ -111,7 +111,7 @@ async function getDecision() {
 
   if (!r.ok) {
     throw new Error(
-      `/api/decision ${r.status}: ` +
+      `/api/plan ${r.status}: ` +
       text.slice(0, 200)
     );
   }
@@ -238,13 +238,93 @@ export default async function handler(
   );
 
   try {
-    const decision =
-      await getDecision();
+   const plan =
+  await getPlan();
 
-    const record =
-      compactDecision(
-        decision
-      );
+const rank =
+  plan?.rankSnapshot ??
+  plan?.rank ??
+  null;
+
+const persistence =
+  rank?.persistence ??
+  null;
+
+const decision = {
+  generatedAt:
+    Date.now(),
+
+  sourceGeneratedAt:
+    plan?.generatedAt ??
+    rank?.generatedAt ??
+    null,
+
+  decision:
+    plan?.tradeAllowed === true
+      ? (
+          Array.isArray(plan?.plans) &&
+          plan.plans.length === 1
+            ? `${plan.plans[0].side} ${plan.plans[0].coin}`
+            : `${plan.plans?.length ?? 0} TRADES`
+        )
+      : "NO TRADE",
+
+  tradeAllowed:
+    plan?.tradeAllowed === true,
+
+  reason:
+    plan?.tradeAllowed === true
+      ? null
+      : plan?.reason ??
+        "no_actionable_signal",
+
+  summary: {
+    bestCoin:
+      rank?.bestActionable?.coin ??
+      rank?.best?.coin ??
+      null,
+
+    bestBias:
+      rank?.bestActionable?.bias ??
+      rank?.best?.bias ??
+      null,
+
+    bestConfidencePct:
+      rank?.bestActionable?.confidence ??
+      rank?.best?.confidence ??
+      null,
+
+    bestScore:
+      rank?.bestActionable?.compositeScore ??
+      rank?.best?.compositeScore ??
+      null,
+
+    persistentSignals:
+      persistence?.persistentSignals ??
+      [],
+  },
+
+  plans:
+    Array.isArray(plan?.plans)
+      ? plan.plans
+      : [],
+
+  system: {
+    planOk:
+      plan?.ok === true,
+
+    rankEmbedded:
+      rank != null,
+
+    persistenceEmbedded:
+      persistence != null,
+  },
+};
+
+const record =
+  compactDecision(
+    decision
+  ); 
 
     const key =
       "hl:decision";
