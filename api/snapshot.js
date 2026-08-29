@@ -244,9 +244,31 @@ async function setupSchedule() {
     schedule = text;
   }
 
-  return { ok: true, schedule };
-}
+  return { ok: true, async function saveRankPersistence() {
+  const r = await fetch(
+    `${BASE}/api/persist`,
+    { cache: "no-store" }
+  );
 
+  const text = await r.text();
+
+  if (!r.ok) {
+    return {
+      ok: false,
+      status: r.status,
+      error: text.slice(0, 200),
+    };
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      ok: true,
+      raw: text,
+    };
+  }
+}
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
@@ -284,7 +306,12 @@ export default async function handler(req, res) {
     }
 
     const result = await saveSnapshot();
-    return res.status(200).json(result);
+const persistence = await saveRankPersistence();
+
+return res.status(200).json({
+  ...result,
+  persistence,
+});
   } catch (e) {
     return res.status(500).json({
       ok: false,
