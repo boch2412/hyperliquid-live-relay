@@ -3,6 +3,9 @@ const HL_INFO =
   "https://api.hyperliquid.xyz/info";
 
 const UNIVERSE_DEX_CONCURRENCY = 4;
+const DEFAULT_DEEP_LIMIT = 18;
+const MAX_DEEP_LIMIT = 24;
+const DEEP_CONCURRENCY = 6;
 const COINS = [
   "BTC",
   "SUI",
@@ -440,6 +443,418 @@ async function getUniverseRanking() {
         ),
 
     ranking,
+  };
+}
+function screenerStage1Score(row) {
+  const liquidity =
+    Number(
+      row?.liquidityScore
+    ) || 0;
+
+  const volume =
+    Math.max(
+      0,
+      Number(
+        row?.dayNtlVlm
+      ) || 0
+    );
+
+  const oiNotional =
+    Math.max(
+      0,
+      Number(
+        row?.oiNotional
+      ) || 0
+    );
+
+  const funding =
+    Math.abs(
+      Number(
+        row?.funding
+      ) || 0
+    );
+
+  const volumeScore =
+    Math.min(
+      1,
+      Math.log10(
+        1 + volume
+      ) / 9
+    );
+
+  const oiScore =
+    Math.min(
+      1,
+      Math.log10(
+        1 + oiNotional
+      ) / 10
+    );
+
+  const liquidityScore =
+    Math.min(
+      1,
+      liquidity / 10
+    );
+
+  const turnover =
+    oiNotional > 0
+      ? volume /
+        oiNotional
+      : 0;
+
+  const activityScore =
+    Math.min(
+      1,
+      Math.log10(
+        1 +
+        turnover * 10
+      ) / 1.5
+    );
+
+  const fundingScore =
+    Math.min(
+      1,
+      funding /
+        0.00015
+    );
+
+  return (
+    liquidityScore *
+      0.42 +
+    volumeScore *
+      0.22 +
+    oiScore *
+      0.16 +
+    activityScore *
+      0.15 +
+    fundingScore *
+      0.05
+  );
+}
+
+function screenerFinalScore(
+  evaluated,
+  stage1Score
+) {
+  const opportunity =
+    Number(
+      evaluated
+        ?.opportunity
+    ) || 0;
+
+  const confidence =
+    (
+      Number(
+        evaluated
+          ?.confidence
+      ) || 0
+    ) / 100;
+
+  const execution =
+    Number(
+      evaluated
+        ?.executionQuality
+        ?.score
+    ) || 0;
+
+  const magnitude =
+    Math.min(
+      1,
+      Math.abs(
+        Number(
+          evaluated
+            ?.compositeScore
+        ) || 0
+      ) / 1.25
+    );
+
+  return (
+    opportunity *
+      0.38 +
+    confidence *
+      0.24 +
+    execution *
+      0.16 +
+    magnitude *
+      0.14 +
+    stage1Score *
+      0.08
+  );
+}
+
+async function runUniverseScreener(
+  requestedLimit
+) {
+  const limit =
+    Math.max(
+      5,
+      Math.min(
+        MAX_DEEP_LIMIT,
+        Number.isFinite(
+          Number(
+            requestedLimit
+          )
+        )
+          ? Math.floor(
+              Number(
+                requestedLimit
+              )
+            )
+          : DEFAULT_DEEP_LIMIT
+      )
+    );
+
+  const universe =
+    await getUniverseRanking();
+
+  const stage1 =
+    (
+      universe
+        ?.ranking ??
+      []
+    )
+      .map(
+        (row) => ({
+          ...row,
+
+          stage1Score:
+            screenerStage1Score(
+              row
+            ),
+        })
+      )
+      .sort(
+        (a, b) =>
+          b.stage1Score -
+          a.stage1Score
+      );
+
+  const shortlist =
+    stage1.slice(
+      0,
+      limit
+    );
+
+  const deepRaw =
+    await mapLimit(
+      shortlist,
+      DEEP_CONCURRENCY,
+      async (row) => {
+        try {
+          const intel =
+            await getIntel(
+              row.coin
+            );
+
+          const evaluated =
+            evaluate(
+              intel
+            );
+
+          return {
+            ok: true,
+
+            result: {
+              ...evaluated,
+
+              stage1Score:
+                row
+                  .stage1Score,
+
+              screenerScore:
+                screenerFinalScore(
+                  evaluated,
+                  row
+                    .stage1Score
+                ),
+
+              universeData: {
+                dex:
+                  row.dex,
+
+                native:
+                  row.native,
+
+                dayNtlVlm:
+                  row
+                    .dayNtlVlm,
+
+                oiNotional:
+                  row
+                    .oiNotional,
+
+                funding:
+                  row
+                    .funding,
+
+                maxLeverage:
+                  row
+                    .maxLeverage,
+              },
+            },
+          };
+        } catch (e) {
+          return {
+            ok: false,
+
+            coin:
+              row.coin,
+
+            error:
+              String(e),
+          };
+        }
+      }
+    );
+
+  const deep =
+    deepRaw
+      .filter(
+        (x) =>
+          x?.ok &&
+          x?.result
+      )
+      .map(
+        (x) =>
+          x.result
+      )
+      .sort(
+        (a, b) =>
+          b.screenerScore -
+          a.screenerScore
+      );
+
+  const actionable =
+    deep.filter(
+      (x) =>
+        (
+          x.bias ===
+            "LONG" ||
+          x.bias ===
+            "SHORT"
+        ) &&
+        x.confidence >=
+          60 &&
+        (
+          x
+            ?.executionQuality
+            ?.score ??
+          0
+        ) >= 0.7
+    );
+
+  const candidates =
+    (
+      actionable.length
+        ? actionable
+        : deep.filter(
+            (x) =>
+              x.bias !==
+              "NEUTRAL"
+          )
+    ).slice(
+      0,
+      3
+    );
+
+  return {
+    ok: true,
+
+    generatedAt:
+      Date.now(),
+
+    methodology: {
+      universeCompared:
+        stage1.length,
+
+      deepChecked:
+        shortlist.length,
+
+      deepConcurrency:
+        DEEP_CONCURRENCY,
+
+      maxCandidates:
+        3,
+    },
+
+    universe: {
+      total:
+        universe
+          ?.counts
+          ?.total ??
+        stage1.length,
+
+      native:
+        universe
+          ?.counts
+          ?.native ??
+        null,
+
+      dexesChecked:
+        universe
+          ?.counts
+          ?.dexesChecked ??
+        null,
+
+      dexesFailed:
+        universe
+          ?.counts
+          ?.dexesFailed ??
+        null,
+    },
+
+    candidates,
+
+    top10:
+      deep.slice(
+        0,
+        10
+      ),
+
+    stage1Top10:
+      stage1
+        .slice(
+          0,
+          10
+        )
+        .map(
+          (x) => ({
+            coin:
+              x.coin,
+
+            stage1Score:
+              x.stage1Score,
+
+            liquidityScore:
+              x
+                .liquidityScore,
+
+            dayNtlVlm:
+              x.dayNtlVlm,
+
+            oiNotional:
+              x.oiNotional,
+
+            funding:
+              x.funding,
+          })
+        ),
+
+    errors:
+      deepRaw
+        .filter(
+          (x) =>
+            !x?.ok
+        )
+        .map(
+          (x) => ({
+            coin:
+              x.coin,
+
+            error:
+              x.error,
+          })
+        ),
   };
 }
 function n(v) {
@@ -1129,6 +1544,37 @@ export default async function handler(
           ok: false,
           error:
             String(e),
+          generatedAt:
+            Date.now(),
+        });
+    }
+  }
+    if (mode === "screener") {
+    try {
+      const limit =
+        url.searchParams.get(
+          "limit"
+        );
+
+      const screener =
+        await runUniverseScreener(
+          limit
+        );
+
+      return res
+        .status(200)
+        .json(
+          screener
+        );
+    } catch (e) {
+      return res
+        .status(500)
+        .json({
+          ok: false,
+
+          error:
+            String(e),
+
           generatedAt:
             Date.now(),
         });
