@@ -621,7 +621,32 @@ function evaluate(intel) {
     volatility: vol,
 
     executionQuality: execution,
+marketSnapshot: {
+  price: {
+    bid:
+      intel?.live?.price?.bid ?? null,
 
+    ask:
+      intel?.live?.price?.ask ?? null,
+
+    mid:
+      intel?.live?.price?.mid ?? null,
+
+    spreadBps:
+      intel?.live?.price?.spreadBps ?? null,
+  },
+
+  momentum: {
+    m5:
+      intel?.live?.momentum?.m5 ?? null,
+
+    m15:
+      intel?.live?.momentum?.m15 ?? null,
+
+    m60:
+      intel?.live?.momentum?.m60 ?? null,
+  },
+},
     components: {
       history,
       momentum,
