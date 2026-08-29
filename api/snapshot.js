@@ -23,11 +23,77 @@ async function getDynamicCoins() {
 
     const data = JSON.parse(text);
 
+    const details =
+  Array.isArray(
+    data?.watchlistDetails
+  )
+    ? data.watchlistDetails
+    : [];
+    
     const dynamic =
   Array.isArray(data?.watchlist)
     ? data.watchlist
     : [];
+const now =
+  Date.now();
 
+for (const item of details) {
+  const coin =
+    String(
+      item?.coin ?? ""
+    );
+
+  if (!coin) continue;
+
+  const record = {
+    t: now,
+
+    coin,
+
+    rank:
+      Number(
+        item?.rank
+      ) || null,
+
+    stage1Score:
+      Number(
+        item?.stage1Score
+      ) || null,
+
+    dex:
+      item?.dex ?? null,
+
+    dayNtlVlm:
+      Number(
+        item?.dayNtlVlm
+      ) || null,
+
+    oiNotional:
+      Number(
+        item?.oiNotional
+      ) || null,
+  };
+
+  const key =
+    `hl:watchrank:${coin}`;
+
+  await redis([
+    "ZADD",
+    key,
+    String(now),
+    JSON.stringify(record),
+  ]);
+
+  await redis([
+    "ZREMRANGEBYSCORE",
+    key,
+    "0",
+    String(
+      now -
+        6 * 60 * 60 * 1000
+    ),
+  ]);
+}
 const byAsset =
   new Map();
 
@@ -169,6 +235,133 @@ try {
     return [...BASE_COINS];
   }
 }
+async function getWatchRankStats(
+  coin
+) {
+  const now =
+    Date.now();
+
+  const key =
+    `hl:watchrank:${coin}`;
+
+  const raw =
+    await redis([
+      "ZRANGEBYSCORE",
+      key,
+      String(
+        now -
+          6 * 60 * 60 * 1000
+      ),
+      String(now),
+    ]);
+
+  const rows =
+    Array.isArray(
+      raw?.result
+    )
+      ? raw.result
+          .map((x) => {
+            try {
+              return JSON.parse(x);
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean)
+      : [];
+
+  if (!rows.length) {
+    return {
+      samples: 0,
+      appearanceRate: 0,
+      consecutive: 0,
+      rankTrend: 0,
+      scoreTrend: 0,
+    };
+  }
+
+  const sorted =
+    rows.sort(
+      (a, b) =>
+        a.t - b.t
+    );
+
+  const first =
+    sorted[0];
+
+  const last =
+    sorted[
+      sorted.length - 1
+    ];
+
+  let consecutive = 1;
+
+  for (
+    let i =
+      sorted.length - 1;
+    i > 0;
+    i--
+  ) {
+    const gap =
+      sorted[i].t -
+      sorted[i - 1].t;
+
+    if (
+      gap <=
+      7 * 60 * 1000
+    ) {
+      consecutive++;
+    } else {
+      break;
+    }
+  }
+
+  const expectedSamples =
+    72;
+
+  const appearanceRate =
+    Math.min(
+      1,
+      sorted.length /
+        expectedSamples
+    );
+
+  const rankTrend =
+    Number(first?.rank) &&
+    Number(last?.rank)
+      ? Number(first.rank) -
+        Number(last.rank)
+      : 0;
+
+  const scoreTrend =
+    Number(last?.stage1Score) -
+    Number(first?.stage1Score);
+
+  return {
+    samples:
+      sorted.length,
+
+    appearanceRate,
+
+    consecutive,
+
+    rankTrend,
+
+    scoreTrend,
+
+    firstRank:
+      first?.rank ?? null,
+
+    latestRank:
+      last?.rank ?? null,
+
+    firstScore:
+      first?.stage1Score ?? null,
+
+    latestScore:
+      last?.stage1Score ?? null,
+  };
+}
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 
 function envFirst(names) {
@@ -268,7 +461,206 @@ async function redis(cmd) {
     return text;
   }
 }
+async function getWatchPersistence(
+  coin
+) {
+  try {
+    const now =
+      Date.now();
 
+    const raw =
+      await redis([
+        "ZRANGEBYSCORE",
+        `hl:watchrank:${coin}`,
+        String(
+          now -
+            6 * 60 * 60 * 1000
+        ),
+        String(now),
+      ]);
+
+    const rows =
+      Array.isArray(
+        raw?.result
+      )
+        ? raw.result
+            .map((x) => {
+              try {
+                return JSON.parse(x);
+              } catch {
+                return null;
+              }
+            })
+            .filter(Boolean)
+        : [];
+
+    if (!rows.length) {
+      return {
+        score: 0.5,
+        samples: 0,
+        appearanceRate: null,
+        consecutive: 0,
+        rankTrend: 0,
+        scoreTrend: 0,
+        historyReady: false,
+      };
+    }
+
+    const sorted =
+      rows.sort(
+        (a, b) =>
+          Number(a?.t) -
+          Number(b?.t)
+      );
+
+    const first =
+      sorted[0];
+
+    const last =
+      sorted[
+        sorted.length - 1
+      ];
+
+    let consecutive = 1;
+
+    for (
+      let i =
+        sorted.length - 1;
+      i > 0;
+      i--
+    ) {
+      const gap =
+        Number(
+          sorted[i]?.t
+        ) -
+        Number(
+          sorted[i - 1]?.t
+        );
+
+      if (
+        gap <=
+        7 * 60 * 1000
+      ) {
+        consecutive++;
+      } else {
+        break;
+      }
+    }
+
+    const appearanceRate =
+      Math.min(
+        1,
+        sorted.length / 72
+      );
+
+    const firstRank =
+      Number(first?.rank);
+
+    const latestRank =
+      Number(last?.rank);
+
+    const rankTrend =
+      Number.isFinite(
+        firstRank
+      ) &&
+      Number.isFinite(
+        latestRank
+      )
+        ? firstRank -
+          latestRank
+        : 0;
+
+    const firstScore =
+      Number(
+        first?.stage1Score
+      );
+
+    const latestScore =
+      Number(
+        last?.stage1Score
+      );
+
+    const scoreTrend =
+      Number.isFinite(
+        firstScore
+      ) &&
+      Number.isFinite(
+        latestScore
+      )
+        ? latestScore -
+          firstScore
+        : 0;
+
+    const appearanceComponent =
+      appearanceRate;
+
+    const consecutiveComponent =
+      Math.min(
+        1,
+        consecutive / 12
+      );
+
+    const rankComponent =
+      Math.max(
+        0,
+        Math.min(
+          1,
+          0.5 +
+            rankTrend / 20
+        )
+      );
+
+    const scoreComponent =
+      Math.max(
+        0,
+        Math.min(
+          1,
+          0.5 +
+            scoreTrend * 5
+        )
+      );
+
+    const score =
+      appearanceComponent *
+        0.35 +
+      consecutiveComponent *
+        0.30 +
+      rankComponent *
+        0.20 +
+      scoreComponent *
+        0.15;
+
+    return {
+      score,
+      samples:
+        sorted.length,
+
+      appearanceRate,
+      consecutive,
+      rankTrend,
+      scoreTrend,
+
+      firstRank:
+        first?.rank ?? null,
+
+      latestRank:
+        last?.rank ?? null,
+
+      historyReady:
+        sorted.length >= 3,
+    };
+  } catch {
+    return {
+      score: 0.5,
+      samples: 0,
+      appearanceRate: null,
+      consecutive: 0,
+      rankTrend: 0,
+      scoreTrend: 0,
+      historyReady: false,
+    };
+  }
+}
 async function quote(coin) {
   const r = await fetch(
     `${BASE}/api/quote?coin=${encodeURIComponent(coin)}`,
