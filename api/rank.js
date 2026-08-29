@@ -762,7 +762,11 @@ async function runUniverseScreener(
 
     generatedAt:
       Date.now(),
-
+    watchlist:
+      shortlist.map(
+        (x) => x.coin
+      ),
+    
     methodology: {
       universeCompared:
         stage1.length,
