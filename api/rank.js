@@ -67,20 +67,18 @@ function estimateVolatility(intel) {
       ? vals[mid]
       : (vals[mid - 1] + vals[mid]) / 2;
 
-  const baselinePct = clamp(
-    median * 1.5,
-    0.08,
-    1.5
-  );
-
   return {
     observedPct: median,
-    baselinePct,
+    baselinePct: clamp(
+      median * 1.5,
+      0.08,
+      1.5
+    ),
     sourceCount: vals.length,
   };
 }
 
-function momentumScore(momentum, volBaseline) {
+function momentumScore(momentum, baseline) {
   const weights = {
     m5: 1,
     m15: 2,
@@ -90,32 +88,27 @@ function momentumScore(momentum, volBaseline) {
   let score = 0;
   let weight = 0;
 
-  const returns = {};
-
   for (const k of ["m5", "m15", "m60"]) {
     const r = n(momentum?.[k]?.returnPct);
 
-    returns[k] = r;
-
     if (r == null) continue;
 
-    const scaled = clamp(
-      r / volBaseline,
-      -1.75,
-      1.75
-    );
+    score +=
+      clamp(
+        r / baseline,
+        -1.75,
+        1.75
+      ) * weights[k];
 
-    score += scaled * weights[k];
     weight += weights[k];
   }
 
-  return {
-    score: weight ? score / weight : 0,
-    returns,
-  };
+  return weight
+    ? score / weight
+    : 0;
 }
 
-function historyDirectionalScore(history, volBaseline) {
+function historyScore(history, baseline) {
   const weights = {
     m5: 1,
     m15: 2,
@@ -137,31 +130,26 @@ function historyDirectionalScore(history, volBaseline) {
     if (price == null) continue;
 
     let s = clamp(
-      price / volBaseline,
+      price / baseline,
       -1.5,
       1.5
     );
 
-    if (oi != null) {
-      const oiMagnitude =
-        Math.abs(oi);
+    if (oi != null && Math.abs(oi) >= 0.05) {
+      if (price > 0 && oi > 0) {
+        s += 0.5;
+      }
 
-      if (oiMagnitude >= 0.05) {
-        if (price > 0 && oi > 0) {
-          s += 0.5;
-        }
+      if (price < 0 && oi > 0) {
+        s -= 0.5;
+      }
 
-        if (price < 0 && oi > 0) {
-          s -= 0.5;
-        }
+      if (price > 0 && oi < 0) {
+        s += 0.2;
+      }
 
-        if (price > 0 && oi < 0) {
-          s += 0.2;
-        }
-
-        if (price < 0 && oi < 0) {
-          s -= 0.2;
-        }
+      if (price < 0 && oi < 0) {
+        s -= 0.2;
       }
     }
 
@@ -216,7 +204,106 @@ function fundingScore(funding) {
   return 0;
 }
 
-function qualityScore(intel) {
+function executionQuality(intel) {
+  const mid =
+    n(intel?.live?.price?.mid);
+
+  const spreadBps =
+    n(intel?.live?.price?.spreadBps) ?? 999;
+
+  const oi =
+    n(intel?.live?.context?.openInterest);
+
+  const vol24 =
+    n(intel?.live?.context?.dayNtlVlm);
+
+  const top20Bid =
+    n(intel?.live?.orderBook?.top20?.bidSize);
+
+  const top20Ask =
+    n(intel?.live?.orderBook?.top20?.askSize);
+
+  const top20Total =
+    (top20Bid ?? 0) +
+    (top20Ask ?? 0);
+
+  const oiNotional =
+    mid != null && oi != null
+      ? mid * oi
+      : null;
+
+  const bookNotional =
+    mid != null
+      ? mid * top20Total
+      : null;
+
+  let score = 1;
+  const reasons = [];
+
+  if (spreadBps > 3) {
+    score -= 0.15;
+    reasons.push("spread_elevated");
+  }
+
+  if (spreadBps > 6) {
+    score -= 0.2;
+    reasons.push("spread_wide");
+  }
+
+  if (vol24 != null) {
+    if (vol24 < 5_000_000) {
+      score -= 0.3;
+      reasons.push("low_24h_volume");
+    } else if (vol24 < 20_000_000) {
+      score -= 0.15;
+      reasons.push("moderate_24h_volume");
+    }
+  } else {
+    score -= 0.15;
+    reasons.push("volume_unknown");
+  }
+
+  if (oiNotional != null) {
+    if (oiNotional < 3_000_000) {
+      score -= 0.25;
+      reasons.push("low_oi_notional");
+    } else if (oiNotional < 10_000_000) {
+      score -= 0.1;
+      reasons.push("moderate_oi_notional");
+    }
+  } else {
+    score -= 0.1;
+    reasons.push("oi_unknown");
+  }
+
+  if (bookNotional != null) {
+    if (bookNotional < 100_000) {
+      score -= 0.25;
+      reasons.push("thin_orderbook");
+    } else if (bookNotional < 300_000) {
+      score -= 0.1;
+      reasons.push("moderate_orderbook");
+    }
+  } else {
+    score -= 0.1;
+    reasons.push("book_depth_unknown");
+  }
+
+  return {
+    score: clamp(score, 0, 1),
+
+    metrics: {
+      spreadBps,
+      vol24,
+      oiNotional,
+      bookNotional,
+    },
+
+    reasons,
+  };
+}
+
+function dataQuality(intel) {
   let q = 1;
 
   const age =
@@ -237,7 +324,7 @@ function qualityScore(intel) {
   if (
     intel?.quality?.full60mReady !== true
   ) {
-    q -= 0.15;
+    q -= 0.25;
   }
 
   if (
@@ -294,15 +381,14 @@ function agreementScore(intel) {
     return 0.5;
   }
 
-  const sum =
+  return (
     Math.abs(
       signs.reduce(
         (a, b) => a + b,
         0
       )
-    );
-
-  return sum / signs.length;
+    ) / signs.length
+  );
 }
 
 function structureConflict(
@@ -354,7 +440,7 @@ function evaluate(intel) {
     );
 
   const history =
-    historyDirectionalScore(
+    historyScore(
       intel?.history,
       vol.baselinePct
     );
@@ -369,13 +455,11 @@ function evaluate(intel) {
       intel?.live?.context?.funding
     );
 
-  const spread =
-    n(
-      intel?.live?.price?.spreadBps
-    ) ?? 999;
-
   const quality =
-    qualityScore(intel);
+    dataQuality(intel);
+
+  const execution =
+    executionQuality(intel);
 
   const agreement =
     agreementScore(intel);
@@ -383,13 +467,13 @@ function evaluate(intel) {
   const conflicts =
     structureConflict(
       history,
-      momentum.score,
+      momentum,
       book
     );
 
   let composite =
     history * 0.40 +
-    momentum.score * 0.35 +
+    momentum * 0.35 +
     book * 0.15 +
     funding * 0.10;
 
@@ -401,13 +485,9 @@ function evaluate(intel) {
     composite *= 0.55;
   }
 
-  if (spread > 5) {
-    composite *= 0.7;
-  }
-
-  if (spread > 10) {
-    composite *= 0.5;
-  }
+  composite *=
+    0.75 +
+    execution.score * 0.25;
 
   const moveStrength =
     clamp(
@@ -418,6 +498,7 @@ function evaluate(intel) {
 
   let confidence =
     quality *
+    execution.score *
     (0.60 + agreement * 0.25) *
     (0.70 + moveStrength * 0.30) *
     100;
@@ -437,26 +518,30 @@ function evaluate(intel) {
       100
     );
 
-  const dynamicThreshold =
+  const threshold =
     clamp(
       0.68 +
-        (1 - quality) * 0.25 +
+        (1 - quality) * 0.30 +
+        (1 - execution.score) * 0.25 +
         conflicts * 0.10,
       0.68,
-      1.15
+      1.25
     );
+
+  const full60mReady =
+    intel?.quality?.full60mReady === true;
 
   let bias = "NEUTRAL";
 
   if (
-    composite >=
-      dynamicThreshold &&
+    full60mReady &&
+    composite >= threshold &&
     confidence >= 60
   ) {
     bias = "LONG";
   } else if (
-    composite <=
-      -dynamicThreshold &&
+    full60mReady &&
+    composite <= -threshold &&
     confidence >= 60
   ) {
     bias = "SHORT";
@@ -464,16 +549,24 @@ function evaluate(intel) {
 
   const reasons = [];
 
-  if (quality < 0.7) {
-    reasons.push(
-      "data_quality_low"
-    );
+  if (!full60mReady) {
+    reasons.push("60m_history_not_ready");
   }
 
+  if (quality < 0.7) {
+    reasons.push("data_quality_low");
+  }
+
+  if (execution.score < 0.7) {
+    reasons.push("execution_quality_low");
+  }
+
+  reasons.push(
+    ...execution.reasons
+  );
+
   if (agreement < 0.5) {
-    reasons.push(
-      "timeframes_conflict"
-    );
+    reasons.push("timeframes_conflict");
   }
 
   if (conflicts >= 1) {
@@ -482,43 +575,22 @@ function evaluate(intel) {
     );
   }
 
-  if (spread > 5) {
-    reasons.push(
-      "spread_wide"
-    );
-  }
-
-  if (
-    intel?.quality
-      ?.full60mReady !== true
-  ) {
-    reasons.push(
-      "60m_history_not_ready"
-    );
-  }
-
   if (
     bias === "NEUTRAL" &&
-    Math.abs(composite) <
-      dynamicThreshold
+    Math.abs(composite) < threshold
   ) {
-    reasons.push(
-      "edge_too_small"
-    );
+    reasons.push("edge_too_small");
   }
 
-  if (
-    confidence < 60
-  ) {
-    reasons.push(
-      "confidence_too_low"
-    );
+  if (confidence < 60) {
+    reasons.push("confidence_too_low");
   }
 
   const opportunity =
     Math.abs(composite) *
     (confidence / 100) *
-    quality;
+    quality *
+    execution.score;
 
   return {
     coin: intel.coin,
@@ -529,26 +601,26 @@ function evaluate(intel) {
 
     confidence,
     opportunity,
-
-    threshold:
-      dynamicThreshold,
+    threshold,
 
     volatility: vol,
 
+    executionQuality: execution,
+
     components: {
       history,
-      momentum:
-        momentum.score,
+      momentum,
       book,
       funding,
       agreement,
       quality,
-      spreadBps:
-        spread,
+      execution:
+        execution.score,
       conflicts,
     },
 
-    reasons,
+    reasons:
+      [...new Set(reasons)],
   };
 }
 
@@ -615,14 +687,10 @@ export default async function handler(
           Date.now(),
 
         best:
-          evaluated.length
-            ? evaluated[0]
-            : null,
+          evaluated[0] ?? null,
 
         bestActionable:
-          actionable.length
-            ? actionable[0]
-            : null,
+          actionable[0] ?? null,
 
         tradeAllowed:
           actionable.length > 0,
