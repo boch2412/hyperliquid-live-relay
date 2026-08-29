@@ -691,10 +691,7 @@ const shortlist =
             evaluate(
               intel
             );
-const persistence =
-  await getWatchPersistence(
-    row.coin
-  );
+
           return {
             ok: true,
 
@@ -709,10 +706,7 @@ const persistence =
   screenerFinalScore(
     evaluated,
     row.stage1Score,
-    persistence.score
   ),
-
-persistence,
 
               universeData: {
                 dex:
