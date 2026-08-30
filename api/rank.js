@@ -2,10 +2,10 @@ const BASE = "https://hyperliquid-live-relay.vercel.app";
 const HL_INFO =
   "https://api.hyperliquid.xyz/info";
 
-const UNIVERSE_DEX_CONCURRENCY = 4;
+const UNIVERSE_DEX_CONCURRENCY = 2;
 const DEFAULT_DEEP_LIMIT = 18;
 const MAX_DEEP_LIMIT = 24;
-const DEEP_CONCURRENCY = 6;
+const DEEP_CONCURRENCY = 3;
 const COINS = [
   "BTC",
   "SUI",
@@ -14,74 +14,344 @@ const COINS = [
   "xyz:SKHX",
 ];
 
+const API_CONCURRENCY = 2;
+const API_START_INTERVAL_MS = 200;
+const MAX_429_RETRIES = 4;
+const RETRY_BASE_MS = 500;
+const CACHE_TTL_MS = 8_000;
+
+let apiActive = 0;
+let apiNextStartAt = 0;
+let apiDrainTimer = null;
+
+const apiQueue = [];
+const responseCache = new Map();
+const responseInFlight = new Map();
+
+function sleep(ms) {
+  return new Promise(
+    (resolve) =>
+      setTimeout(resolve, ms)
+  );
+}
+
+function apiClockMs() {
+  if (
+    typeof performance !==
+      "undefined" &&
+    typeof performance.now ===
+      "function"
+  ) {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function drainApiQueue() {
+  while (
+    apiActive < API_CONCURRENCY &&
+    apiQueue.length
+  ) {
+    const waitMs = Math.max(
+      0,
+      apiNextStartAt -
+        apiClockMs()
+    );
+
+    if (waitMs > 0) {
+      if (apiDrainTimer == null) {
+        apiDrainTimer = setTimeout(
+          () => {
+            apiDrainTimer = null;
+            drainApiQueue();
+          },
+          waitMs
+        );
+      }
+
+      return;
+    }
+
+    const job = apiQueue.shift();
+
+    apiActive += 1;
+    let taskPromise;
+
+    try {
+      taskPromise =
+        Promise.resolve(
+          job.task()
+        );
+    } catch (error) {
+      taskPromise =
+        Promise.reject(error);
+    }
+
+    apiNextStartAt =
+      apiClockMs() +
+      API_START_INTERVAL_MS;
+
+    taskPromise
+      .then(
+        job.resolve,
+        job.reject
+      )
+      .finally(() => {
+        apiActive -= 1;
+        drainApiQueue();
+      });
+  }
+}
+
+function scheduleApiRequest(task) {
+  return new Promise(
+    (resolve, reject) => {
+      apiQueue.push({
+        task,
+        resolve,
+        reject,
+      });
+
+      drainApiQueue();
+    }
+  );
+}
+
+function parseRetryAfterMs(value) {
+  if (!value) {
+    return 0;
+  }
+
+  const seconds = Number(value);
+
+  if (
+    Number.isFinite(seconds) &&
+    seconds >= 0
+  ) {
+    return seconds * 1000;
+  }
+
+  const retryAt = Date.parse(value);
+
+  if (!Number.isFinite(retryAt)) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    retryAt - Date.now()
+  );
+}
+
+async function fetchTextWithRateLimit(
+  url,
+  options
+) {
+  for (
+    let retry = 0;
+    retry <= MAX_429_RETRIES;
+    retry += 1
+  ) {
+    const result =
+      await scheduleApiRequest(
+        async () => {
+          const r = await fetch(
+            url,
+            options
+          );
+
+          const text =
+            await r.text();
+
+          return {
+            ok: r.ok,
+            status: r.status,
+            text,
+            retryAfter:
+              r.headers.get(
+                "retry-after"
+              ),
+          };
+        }
+      );
+
+    if (
+      result.status !== 429 ||
+      retry >= MAX_429_RETRIES
+    ) {
+      return result;
+    }
+
+    const backoffMs =
+      RETRY_BASE_MS *
+      2 ** retry;
+
+    const retryAfterMs =
+      parseRetryAfterMs(
+        result.retryAfter
+      );
+
+    await sleep(
+      Math.max(
+        backoffMs,
+        retryAfterMs
+      )
+    );
+  }
+
+  throw new Error(
+    "Unreachable API retry state"
+  );
+}
+
+function getCachedValue(
+  key,
+  loader
+) {
+  const now = Date.now();
+  const cached =
+    responseCache.get(key);
+
+  if (
+    cached &&
+    now < cached.expiresAt
+  ) {
+    return Promise.resolve(
+      cached.value
+    );
+  }
+
+  if (cached) {
+    responseCache.delete(key);
+  }
+
+  const inFlight =
+    responseInFlight.get(key);
+
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const promise = (async () => {
+    try {
+      const value =
+        await loader();
+
+      responseCache.set(
+        key,
+        {
+          value,
+          expiresAt:
+            Date.now() +
+            CACHE_TTL_MS,
+        }
+      );
+
+      return value;
+    } finally {
+      responseInFlight.delete(key);
+    }
+  })();
+
+  responseInFlight.set(
+    key,
+    promise
+  );
+
+  return promise;
+}
+
 async function getPersistenceScore(
   coin
 ) {
   try {
-    const r =
-      await fetch(
-        `${BASE}/api/persistence?mode=watchrank&coin=${encodeURIComponent(
-          coin
-        )}`,
-        {
-          cache: "no-store",
+    return await getCachedValue(
+      `persistence-score:${coin}`,
+      async () => {
+        const result =
+          await fetchTextWithRateLimit(
+            `${BASE}/api/persistence?mode=watchrank&coin=${encodeURIComponent(
+              coin
+            )}`,
+            {
+              cache: "no-store",
+            }
+          );
+
+        if (!result.ok) {
+          throw new Error(
+            `persistence-score ${result.status}: ${result.text.slice(
+              0,
+              150
+            )}`
+          );
         }
-      );
 
-    if (!r.ok) {
-      return 0.5;
-    }
+        const data =
+          JSON.parse(
+            result.text
+          );
 
-    const data =
-      await r.json();
+        const score =
+          Number(
+            data?.ranking?.[0]?.score
+          );
 
-    const score =
-      Number(
-        data?.ranking?.[0]?.score
-      );
-
-    return Number.isFinite(score)
-      ? score
-      : 0.5;
+        return Number.isFinite(score)
+          ? score
+          : 0.5;
+      }
+    );
   } catch {
     return 0.5;
   }
 }
 
 async function postHlInfo(payload) {
-  const r = await fetch(
-    HL_INFO,
-    {
-      method: "POST",
+  const cacheKey =
+    `hl:${JSON.stringify(
+      payload
+    )}`;
 
-      headers: {
-        "content-type":
-          "application/json",
-      },
+  return getCachedValue(
+    cacheKey,
+    async () => {
+      const result =
+        await fetchTextWithRateLimit(
+          HL_INFO,
+          {
+            method: "POST",
 
-      body:
-        JSON.stringify(
-          payload
-        ),
+            headers: {
+              "content-type":
+                "application/json",
+            },
 
-      cache:
-        "no-store",
+            body:
+              JSON.stringify(
+                payload
+              ),
+
+            cache:
+              "no-store",
+          }
+        );
+
+      if (!result.ok) {
+        throw new Error(
+          `HL ${result.status}: ${result.text.slice(
+            0,
+            200
+          )}`
+        );
+      }
+
+      return JSON.parse(
+        result.text
+      );
     }
   );
-
-  const text =
-    await r.text();
-
-  if (!r.ok) {
-    throw new Error(
-      `HL ${r.status}: ${text.slice(
-        0,
-        200
-      )}`
-    );
-  }
-
-  return JSON.parse(text);
 }
 
 function baseName(s) {
@@ -985,36 +1255,60 @@ function abs(v) {
 }
 
 async function getIntel(coin) {
-  const r = await fetch(
-    `${BASE}/api/intel?coin=${encodeURIComponent(coin)}`,
-    { cache: "no-store" }
+  return getCachedValue(
+    `intel:${coin}`,
+    async () => {
+      const result =
+        await fetchTextWithRateLimit(
+          `${BASE}/api/intel?coin=${encodeURIComponent(
+            coin
+          )}`,
+          {
+            cache: "no-store",
+          }
+        );
+
+      if (!result.ok) {
+        throw new Error(
+          `${coin} ${result.status}: ${result.text.slice(
+            0,
+            150
+          )}`
+        );
+      }
+
+      return JSON.parse(
+        result.text
+      );
+    }
   );
-
-  const text = await r.text();
-
-  if (!r.ok) {
-    throw new Error(
-      `${coin} ${r.status}: ${text.slice(0, 150)}`
-    );
-  }
-
-  return JSON.parse(text);
 }
 async function getPersistence() {
-  const r = await fetch(
-    `${BASE}/api/persistence`,
-    { cache: "no-store" }
+  return getCachedValue(
+    "persistence:all",
+    async () => {
+      const result =
+        await fetchTextWithRateLimit(
+          `${BASE}/api/persistence`,
+          {
+            cache: "no-store",
+          }
+        );
+
+      if (!result.ok) {
+        throw new Error(
+          `persistence ${result.status}: ${result.text.slice(
+            0,
+            150
+          )}`
+        );
+      }
+
+      return JSON.parse(
+        result.text
+      );
+    }
   );
-
-  const text = await r.text();
-
-  if (!r.ok) {
-    throw new Error(
-      `persistence ${r.status}: ${text.slice(0, 150)}`
-    );
-  }
-
-  return JSON.parse(text);
 }
 function estimateVolatility(intel) {
   const vals = [
