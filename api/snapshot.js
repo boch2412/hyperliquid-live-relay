@@ -6,6 +6,49 @@ const BASE_COINS = [
   "xyz:SNDK",
   "xyz:SKHX",
 ];
+
+const SNAPSHOT_QUOTE_CONCURRENCY = 2;
+
+async function mapLimit(
+  items,
+  limit,
+  fn
+) {
+  const out =
+    new Array(items.length);
+
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+
+      if (index >= items.length) {
+        return;
+      }
+
+      out[index] =
+        await fn(
+          items[index]
+        );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      {
+        length: Math.min(
+          limit,
+          items.length
+        ),
+      },
+      worker
+    )
+  );
+
+  return out;
+}
+
 async function getDynamicCoins() {
   try {
     const r = await fetch(
@@ -183,6 +226,24 @@ try {
   const rollingByAsset =
     new Map();
 
+  for (const coin of current) {
+    const raw =
+      String(coin);
+
+    const asset =
+      raw.includes(":")
+        ? raw.split(":").pop()
+        : raw;
+
+    const key =
+      asset.toUpperCase();
+
+    rollingByAsset.set(
+      key,
+      coin
+    );
+  }
+
   for (const coin of recent) {
     const raw =
       String(coin);
@@ -205,21 +266,6 @@ try {
         coin
       );
     }
-  }
-
-  for (const coin of current) {
-    const raw =
-      String(coin);
-
-    const asset =
-      raw.includes(":")
-        ? raw.split(":").pop()
-        : raw;
-
-    rollingByAsset.set(
-      asset.toUpperCase(),
-      coin
-    );
   }
 
   return Array.from(
@@ -695,14 +741,16 @@ async function saveSnapshot() {
   }
 const dynamicCoins =
   await getDynamicCoins();
-  const quotes = await Promise.all(
-    dynamicCoins.map(async (coin) => {
+  const quotes = await mapLimit(
+    dynamicCoins,
+    SNAPSHOT_QUOTE_CONCURRENCY,
+    async (coin) => {
       try {
         return { coin, q: await quote(coin) };
       } catch (e) {
         return { coin, error: String(e) };
       }
-    })
+    }
   );
 
   const saved = [];
