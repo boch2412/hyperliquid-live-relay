@@ -10,13 +10,19 @@ import {
   scoreWithPersistence,
 } from '../lib/persistence-shadow.mjs';
 
-test('production 10% formula remains exact', () => {
-  assert.equal(scoreWithPersistence(0.8, 0.2, 0.10), 0.74);
+function approx(actual, expected, eps = 1e-12) {
+  assert.ok(Math.abs(actual - expected) < eps, `${actual} != ${expected}`);
+}
+
+test('production 10% formula remains exact within floating tolerance', () => {
+  approx(scoreWithPersistence(0.8, 0.2, 0.10), 0.74);
 });
 
 test('5/10/15 shadow scores only change persistence weight', () => {
   const scores = buildShadowScores(0.8, 0.2);
-  assert.deepEqual(scores, { '5': 0.77, '10': 0.74, '15': 0.71 });
+  approx(scores['5'], 0.77);
+  approx(scores['10'], 0.74);
+  approx(scores['15'], 0.71);
 });
 
 test('shadow ranking uses deterministic tie-break', () => {
@@ -67,6 +73,6 @@ test('stale or partial weight failure is invalid, not no-trade', () => {
 test('LONG uses ask to bid and SHORT uses bid to ask', () => {
   const long = netReturn({ direction: 'LONG', entryAsk: 100, exitBid: 101, feeRate: 0, slippageRate: 0 });
   const short = netReturn({ direction: 'SHORT', entryBid: 100, exitAsk: 99, feeRate: 0, slippageRate: 0 });
-  assert.equal(long, 0.01);
-  assert.ok(Math.abs(short - (100 / 99 - 1)) < 1e-12);
+  approx(long, 0.01);
+  approx(short, 100 / 99 - 1);
 });
