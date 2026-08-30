@@ -118,6 +118,128 @@ const WATCHRANK_WINDOW_MS =
 const WATCHRANK_EXPECTED_SAMPLES =
   72;
 
+const WATCHRANK_REDIS_CONCURRENCY =
+  4;
+
+async function mapLimit(
+  items,
+  limit,
+  fn
+) {
+  const out =
+    new Array(items.length);
+
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+
+      if (index >= items.length) {
+        return;
+      }
+
+      out[index] =
+        await fn(
+          items[index]
+        );
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      {
+        length: Math.min(
+          limit,
+          items.length
+        ),
+      },
+      worker
+    )
+  );
+
+  return out;
+}
+
+function watchRankAssetKey(coin) {
+  const raw = String(
+    coin ?? ""
+  );
+
+  return (
+    raw.includes(":")
+      ? raw.split(":").pop()
+      : raw
+  ).toUpperCase();
+}
+
+async function loadWatchRankCoins(
+  requestedCoins,
+  requestedCoin
+) {
+  let sourceCoins = [];
+
+  if (requestedCoins.length) {
+    sourceCoins = requestedCoins;
+  } else if (requestedCoin) {
+    sourceCoins = [requestedCoin];
+  } else {
+    const now = Date.now();
+    const raw =
+      await redis([
+        "ZREVRANGEBYSCORE",
+        "hl:watchlist:recent",
+        String(now),
+        String(
+          now -
+            WATCHRANK_WINDOW_MS
+        ),
+        "LIMIT",
+        "0",
+        "36",
+      ]);
+
+    const recent =
+      Array.isArray(raw?.result)
+        ? raw.result.map(String)
+        : [];
+
+    sourceCoins = [
+      ...recent,
+      ...COINS,
+    ];
+  }
+
+  const byAsset = new Map();
+
+  for (
+    const coin of [
+      ...sourceCoins,
+    ]
+  ) {
+    if (!coin) {
+      continue;
+    }
+
+    const key =
+      watchRankAssetKey(coin);
+
+    if (
+      key &&
+      !byAsset.has(key)
+    ) {
+      byAsset.set(
+        key,
+        String(coin)
+      );
+    }
+  }
+
+  return [
+    ...byAsset.values(),
+  ];
+}
+
 async function loadWatchRank(
   coin
 ) {
@@ -360,54 +482,28 @@ const consecutiveComponent =
   };
 }
 
-async function getWatchRankResults() {
-  const rankResponse =
-    await fetch(
-      "https://hyperliquid-live-relay.vercel.app/api/rank?mode=screener&limit=18",
-      {
-        cache:
-          "no-store",
-      }
-    );
-
-  const text =
-    await rankResponse.text();
-
-  if (!rankResponse.ok) {
-    throw new Error(
-      `rank ${rankResponse.status}: ${text.slice(
-        0,
-        200
-      )}`
-    );
-  }
-
-  const data =
-    JSON.parse(text);
-
+async function getWatchRankResults(
+  requestedCoins,
+  requestedCoin
+) {
   const watchlist =
-    Array.isArray(
-      data?.watchlist
-    )
-      ? data.watchlist
-      : [];
+    await loadWatchRankCoins(
+      requestedCoins,
+      requestedCoin
+    );
 
   const loaded =
-  [];
-
-for (
-  const coin of watchlist
-) {
-  const rows =
-    await loadWatchRank(
-      coin
+    await mapLimit(
+      watchlist,
+      WATCHRANK_REDIS_CONCURRENCY,
+      async (coin) => ({
+        coin,
+        rows:
+          await loadWatchRank(
+            coin
+          ),
+      })
     );
-
-  loaded.push({
-    coin,
-    rows,
-  });
-}
 
 const observedMaxSamples =
   Math.max(
@@ -881,14 +977,29 @@ if (
   mode ===
   "watchrank"
 ) {
-  const ranking =
-    await getWatchRankResults();
-
   const requestedCoin =
     String(
       req.query.coin ||
         ""
     ).trim();
+
+  const requestedCoins =
+    String(
+      req.query.coins ||
+        ""
+    )
+      .split(",")
+      .map((coin) =>
+        coin.trim()
+      )
+      .filter(Boolean)
+      .slice(0, 36);
+
+  const ranking =
+    await getWatchRankResults(
+      requestedCoins,
+      requestedCoin
+    );
 
   const filtered =
     requestedCoin
