@@ -262,17 +262,28 @@ function getCachedValue(
   return promise;
 }
 
-async function getPersistenceScore(
-  coin
+async function getPersistenceScoreMap(
+  coins
 ) {
+  const requestedCoins = [
+    ...new Set(
+      coins
+        .map(String)
+        .filter(Boolean)
+    ),
+  ];
+
+  const query =
+    requestedCoins.join(",");
+
   try {
     return await getCachedValue(
-      `persistence-score:${coin}`,
+      `persistence-score:${query}`,
       async () => {
         const result =
           await fetchTextWithRateLimit(
-            `${BASE}/api/persistence?mode=watchrank&coin=${encodeURIComponent(
-              coin
+            `${BASE}/api/persistence?mode=watchrank&coins=${encodeURIComponent(
+              query
             )}`,
             {
               cache: "no-store",
@@ -293,18 +304,45 @@ async function getPersistenceScore(
             result.text
           );
 
-        const score =
-          Number(
-            data?.ranking?.[0]?.score
-          );
+        const ranking =
+          Array.isArray(
+            data?.ranking
+          )
+            ? data.ranking
+            : [];
 
-        return Number.isFinite(score)
-          ? score
-          : 0.5;
+        const scores = new Map();
+
+        for (const row of ranking) {
+          const coin = String(
+            row?.coin ?? ""
+          );
+          const score =
+            Number(row?.score);
+
+          if (
+            !coin ||
+            !Number.isFinite(score)
+          ) {
+            continue;
+          }
+
+          scores.set(
+            coin,
+            score
+          );
+          scores.set(
+            baseName(coin)
+              .toUpperCase(),
+            score
+          );
+        }
+
+        return scores;
       }
     );
   } catch {
-    return 0.5;
+    return new Map();
   }
 }
 
@@ -981,6 +1019,13 @@ const shortlist =
     limit
   );
 
+  const persistenceScoresPromise =
+    getPersistenceScoreMap(
+      shortlist.map(
+        (row) => row.coin
+      )
+    );
+
   const deepRaw =
     await mapLimit(
       shortlist,
@@ -997,10 +1042,18 @@ const shortlist =
     intel
   );
 
+const persistenceScores =
+  await persistenceScoresPromise;
+
 const persistenceScore =
-  await getPersistenceScore(
+  persistenceScores.get(
     row.coin
-  );
+  ) ??
+  persistenceScores.get(
+    baseName(row.coin)
+      .toUpperCase()
+  ) ??
+  0.5;
 
 return {
             ok: true,
