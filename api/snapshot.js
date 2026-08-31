@@ -8,6 +8,18 @@ const BASE_COINS = [
 ];
 
 const SNAPSHOT_QUOTE_CONCURRENCY = 2;
+const configuredQuoteTimeoutMs =
+  Number(
+    process.env
+      .SNAPSHOT_QUOTE_TIMEOUT_MS
+  );
+const SNAPSHOT_QUOTE_TIMEOUT_MS =
+  Number.isFinite(
+    configuredQuoteTimeoutMs
+  ) &&
+  configuredQuoteTimeoutMs > 0
+    ? configuredQuoteTimeoutMs
+    : 8_000;
 
 async function mapLimit(
   items,
@@ -708,16 +720,40 @@ async function getWatchPersistence(
   }
 }
 async function quote(coin) {
-  const r = await fetch(
-    `${BASE}/api/quote?coin=${encodeURIComponent(coin)}`,
-    { cache: "no-store" }
+  const controller =
+    new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    SNAPSHOT_QUOTE_TIMEOUT_MS
   );
 
-  if (!r.ok) {
-    throw new Error(`quote ${coin}: ${r.status}`);
-  }
+  try {
+    const r = await fetch(
+      `${BASE}/api/quote?coin=${encodeURIComponent(coin)}`,
+      {
+        cache: "no-store",
+        signal: controller.signal,
+      }
+    );
 
-  return r.json();
+    if (!r.ok) {
+      throw new Error(
+        `quote ${coin}: ${r.status}`
+      );
+    }
+
+    return r.json();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `quote ${coin}: timeout after ${SNAPSHOT_QUOTE_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function saveSnapshot() {
