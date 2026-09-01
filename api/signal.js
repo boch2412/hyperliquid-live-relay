@@ -24,7 +24,6 @@ function sleep(ms) {
   );
 }
 
-
 function apiClockMs() {
   if (
     typeof performance !==
