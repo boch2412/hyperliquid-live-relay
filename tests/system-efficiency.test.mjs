@@ -14,7 +14,6 @@ const ROOT = resolve(
   ".."
 );
 
-
 function response(data, status = 200) {
   return new Response(
     JSON.stringify(data),
