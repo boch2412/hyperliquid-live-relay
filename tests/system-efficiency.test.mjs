@@ -14,6 +14,7 @@ const ROOT = resolve(
   ".."
 );
 
+
 function response(data, status = 200) {
   return new Response(
     JSON.stringify(data),
@@ -442,6 +443,141 @@ async function verifySnapshotQuoteTimeout() {
   );
 }
 
+async function verifySignalRateLimitRecovery() {
+  process.env.SIGNAL_RETRY_BASE_MS = "1";
+
+  let bookAttempts = 0;
+  let alwaysRateLimited = false;
+  const starts = [];
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(
+      String(url),
+      "https://api.hyperliquid.xyz/info"
+    );
+    starts.push(performance.now());
+
+    const payload = JSON.parse(options.body);
+
+    if (payload.type === "metaAndAssetCtxs") {
+      return response([
+        {
+          universe: [
+            {
+              name: "SUI",
+            },
+          ],
+        },
+        [
+          {
+            markPx: "1",
+            oraclePx: "1",
+            funding: "0",
+            openInterest: "1",
+            dayNtlVlm: "1",
+            premium: "0",
+          },
+        ],
+      ]);
+    }
+
+    if (payload.type === "l2Book") {
+      bookAttempts += 1;
+
+      if (
+        alwaysRateLimited ||
+        bookAttempts <= 2
+      ) {
+        return response(null, 429);
+      }
+
+      return response({
+        levels: [
+          [
+            {
+              px: "0.99",
+              sz: "10",
+            },
+          ],
+          [
+            {
+              px: "1.01",
+              sz: "10",
+            },
+          ],
+        ],
+        time: Date.now(),
+      });
+    }
+
+    if (payload.type === "candleSnapshot") {
+      return response([
+        {
+          t: Date.now(),
+          o: "1",
+          c: "1",
+          h: "1",
+          l: "1",
+          v: "1",
+        },
+      ]);
+    }
+
+    throw new Error(
+      `unexpected payload ${JSON.stringify(payload)}`
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/signal.js",
+      "rate-limit-recovery"
+    );
+
+  const recovered = makeRes();
+  await handler(
+    {
+      url: "/api/signal?coin=SUI",
+    },
+    recovered
+  );
+
+  assert.equal(recovered.statusCode, 200);
+  assert.equal(recovered.body.ok, true);
+  assert.equal(recovered.body.live, true);
+  assert.equal(bookAttempts, 3);
+
+  const gaps = starts
+    .slice(1)
+    .map(
+      (start, index) =>
+        start - starts[index]
+    );
+  assert.ok(
+    Math.min(...gaps) >= 199.5,
+    `minimum signal API start gap was ${Math.min(...gaps)}ms`
+  );
+
+  alwaysRateLimited = true;
+  bookAttempts = 0;
+
+  const exhausted = makeRes();
+  await handler(
+    {
+      url: "/api/signal?coin=SUI",
+    },
+    exhausted
+  );
+
+  assert.equal(exhausted.statusCode, 500);
+  assert.equal(exhausted.body.ok, false);
+  assert.equal(bookAttempts, 5);
+  assert.match(
+    exhausted.body.error,
+    /HL 429/
+  );
+}
+
 function makeIntel(coin) {
   const window = {
     ready: true,
@@ -684,6 +820,7 @@ test(
       await verifyPersistenceBatch();
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
+      await verifySignalRateLimitRecovery();
       await verifyRankPersistenceSingleBatch();
     } finally {
       globalThis.fetch = previousFetch;
@@ -691,6 +828,7 @@ test(
       delete process.env.STORAGE_REDIS_REST_URL;
       delete process.env.STORAGE_REDIS_REST_TOKEN;
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
+      delete process.env.SIGNAL_RETRY_BASE_MS;
     }
   }
 );
