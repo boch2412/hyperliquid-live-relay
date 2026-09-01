@@ -1,6 +1,200 @@
 const HL_INFO = "https://api.hyperliquid.xyz/info";
 const FRESH_MS = 10_000;
 
+const API_CONCURRENCY = 2;
+const API_START_INTERVAL_MS = 200;
+const MAX_429_RETRIES = 4;
+const RETRY_BASE_MS = Math.max(
+  1,
+  Number(
+    process.env.SIGNAL_RETRY_BASE_MS
+  ) || 500
+);
+
+let apiActive = 0;
+let apiNextStartAt = 0;
+let apiDrainTimer = null;
+
+const apiQueue = [];
+
+function sleep(ms) {
+  return new Promise(
+    (resolve) =>
+      setTimeout(resolve, ms)
+  );
+}
+
+
+function apiClockMs() {
+  if (
+    typeof performance !==
+      "undefined" &&
+    typeof performance.now ===
+      "function"
+  ) {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function drainApiQueue() {
+  while (
+    apiActive < API_CONCURRENCY &&
+    apiQueue.length
+  ) {
+    const waitMs = Math.max(
+      0,
+      apiNextStartAt -
+        apiClockMs()
+    );
+
+    if (waitMs > 0) {
+      if (apiDrainTimer == null) {
+        apiDrainTimer = setTimeout(
+          () => {
+            apiDrainTimer = null;
+            drainApiQueue();
+          },
+          waitMs
+        );
+      }
+
+      return;
+    }
+
+    const job = apiQueue.shift();
+
+    apiActive += 1;
+    let taskPromise;
+
+    try {
+      taskPromise =
+        Promise.resolve(
+          job.task()
+        );
+    } catch (error) {
+      taskPromise =
+        Promise.reject(error);
+    }
+
+    apiNextStartAt =
+      apiClockMs() +
+      API_START_INTERVAL_MS;
+
+    taskPromise
+      .then(
+        job.resolve,
+        job.reject
+      )
+      .finally(() => {
+        apiActive -= 1;
+        drainApiQueue();
+      });
+  }
+}
+
+function scheduleApiRequest(task) {
+  return new Promise(
+    (resolve, reject) => {
+      apiQueue.push({
+        task,
+        resolve,
+        reject,
+      });
+
+      drainApiQueue();
+    }
+  );
+}
+
+function parseRetryAfterMs(value) {
+  if (!value) {
+    return 0;
+  }
+
+  const seconds = Number(value);
+
+  if (
+    Number.isFinite(seconds) &&
+    seconds >= 0
+  ) {
+    return seconds * 1000;
+  }
+
+  const retryAt = Date.parse(value);
+
+  if (!Number.isFinite(retryAt)) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    retryAt - Date.now()
+  );
+}
+
+async function fetchTextWithRateLimit(
+  url,
+  options
+) {
+  for (
+    let retry = 0;
+    retry <= MAX_429_RETRIES;
+    retry += 1
+  ) {
+    const result =
+      await scheduleApiRequest(
+        async () => {
+          const r = await fetch(
+            url,
+            options
+          );
+
+          const text =
+            await r.text();
+
+          return {
+            ok: r.ok,
+            status: r.status,
+            text,
+            retryAfter:
+              r.headers.get(
+                "retry-after"
+              ),
+          };
+        }
+      );
+
+    if (
+      result.status !== 429 ||
+      retry >= MAX_429_RETRIES
+    ) {
+      return result;
+    }
+
+    const backoffMs =
+      RETRY_BASE_MS *
+      2 ** retry;
+
+    const retryAfterMs =
+      parseRetryAfterMs(
+        result.retryAfter
+      );
+
+    await sleep(
+      Math.max(
+        backoffMs,
+        retryAfterMs
+      )
+    );
+  }
+
+  throw new Error(
+    "Unreachable API retry state"
+  );
+}
+
 function num(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
@@ -29,22 +223,29 @@ function bps(a, b) {
 async function postInfo(payload) {
   const t0 = Date.now();
 
-  const r = await fetch(HL_INFO, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+  const result =
+    await fetchTextWithRateLimit(
+      HL_INFO,
+      {
+        method: "POST",
+        headers: {
+          "content-type":
+            "application/json",
+        },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      }
+    );
 
-  const text = await r.text();
+  const text = result.text;
   let data = null;
 
   try {
     data = JSON.parse(text);
   } catch {}
 
-  if (!r.ok) {
-    throw new Error(`HL ${r.status}: ${text.slice(0, 200)}`);
+  if (!result.ok) {
+    throw new Error(`HL ${result.status}: ${text.slice(0, 200)}`);
   }
 
   return {
