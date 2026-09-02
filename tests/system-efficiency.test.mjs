@@ -561,12 +561,24 @@ async function verifySignalRateLimitRecovery() {
   bookAttempts = 0;
 
   const exhausted = makeRes();
-  await handler(
-    {
-      url: "/api/signal?coin=SUI",
-    },
-    exhausted
-  );
+  const signalLogs = [];
+  const previousConsoleError =
+    console.error;
+
+  console.error = (message) => {
+    signalLogs.push(String(message));
+  };
+
+  try {
+    await handler(
+      {
+        url: "/api/signal?coin=SUI",
+      },
+      exhausted
+    );
+  } finally {
+    console.error = previousConsoleError;
+  }
 
   assert.equal(exhausted.statusCode, 500);
   assert.equal(exhausted.body.ok, false);
@@ -575,6 +587,88 @@ async function verifySignalRateLimitRecovery() {
     exhausted.body.error,
     /HL 429/
   );
+
+  assert.equal(signalLogs.length, 1);
+  const signalLog =
+    JSON.parse(signalLogs[0]);
+  assert.deepEqual(
+    {
+      level: signalLog.level,
+      event: signalLog.event,
+      route: signalLog.route,
+      coin: signalLog.coin,
+    },
+    {
+      level: "error",
+      event: "signal_failed",
+      route: "/api/signal",
+      coin: "SUI",
+    }
+  );
+  assert.match(signalLog.error, /HL 429/);
+  assert.ok(signalLog.durationMs >= 0);
+}
+
+async function verifyIntelFailureLogging() {
+  globalThis.fetch = async () =>
+    response(
+      {
+        ok: false,
+        error: "upstream unavailable",
+      },
+      503
+    );
+
+  const { default: handler } =
+    await freshImport(
+      "api/intel.js",
+      "failure-logging"
+    );
+
+  const intelLogs = [];
+  const previousConsoleError =
+    console.error;
+  const res = makeRes();
+
+  console.error = (message) => {
+    intelLogs.push(String(message));
+  };
+
+  try {
+    await handler(
+      {
+        query: {
+          coin: "SUI",
+        },
+      },
+      res
+    );
+  } finally {
+    console.error = previousConsoleError;
+  }
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.equal(intelLogs.length, 1);
+
+  const intelLog =
+    JSON.parse(intelLogs[0]);
+  assert.deepEqual(
+    {
+      level: intelLog.level,
+      event: intelLog.event,
+      route: intelLog.route,
+      coin: intelLog.coin,
+    },
+    {
+      level: "error",
+      event: "intel_failed",
+      route: "/api/intel",
+      coin: "SUI",
+    }
+  );
+  assert.match(intelLog.error, /503/);
+  assert.ok(intelLog.durationMs >= 0);
 }
 
 function makeIntel(coin) {
@@ -820,6 +914,7 @@ test(
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
       await verifySignalRateLimitRecovery();
+      await verifyIntelFailureLogging();
       await verifyRankPersistenceSingleBatch();
     } finally {
       globalThis.fetch = previousFetch;
