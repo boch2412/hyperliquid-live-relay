@@ -525,6 +525,7 @@ export default async function handler(
   );
 
   const receivedAt = Date.now();
+  let coin = "";
 
   try {
     const url = new URL(
@@ -532,7 +533,7 @@ export default async function handler(
   "https://hyperliquid-live-relay.vercel.app"
 );
 
-const coin = String(
+coin = String(
   url.searchParams.get("coin") || ""
 )
   .trim()
@@ -753,12 +754,27 @@ const coin = String(
         },
       });
   } catch (e) {
+    const error = String(e);
+
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "signal_failed",
+        route: "/api/signal",
+        coin: coin || null,
+        error,
+        durationMs:
+          Date.now() -
+          receivedAt,
+      })
+    );
+
     return res
       .status(500)
       .json({
         ok: false,
         live: false,
-        error: String(e),
+        error,
         receivedAt,
       });
   }
