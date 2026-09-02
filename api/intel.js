@@ -171,9 +171,10 @@ export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
   const receivedAt = Date.now();
+  let coin = "";
 
   try {
-    const coin = normalizeCoin(req.query.coin);
+    coin = normalizeCoin(req.query.coin);
 
     if (!coin) {
       return res.status(400).json({
@@ -256,9 +257,24 @@ export default async function handler(req, res) {
       receivedAt,
     });
   } catch (e) {
+    const error = String(e);
+
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "intel_failed",
+        route: "/api/intel",
+        coin: coin || null,
+        error,
+        durationMs:
+          Date.now() -
+          receivedAt,
+      })
+    );
+
     return res.status(500).json({
       ok: false,
-      error: String(e),
+      error,
       receivedAt,
     });
   }
