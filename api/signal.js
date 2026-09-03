@@ -480,14 +480,15 @@ function summarizeCandles(candles) {
   };
 }
 
-async function candleWindow(
+async function candleWindows(
   coin,
-  minutes,
   now
 ) {
+  const longestMinutes = 60;
   const startTime =
     now -
-    (minutes + 2) * 60_000;
+    (longestMinutes + 2) *
+      60_000;
 
   const req = {
     coin,
@@ -501,18 +502,31 @@ async function candleWindow(
     req,
   });
 
-  const candles =
-    Array.isArray(data)
-      ? data.filter(
-          (c) =>
-            num(c?.t) >=
-            now -
-              minutes *
-                60_000
-        )
-      : [];
+  const candles = Array.isArray(data)
+    ? data
+    : [];
 
-  return summarizeCandles(candles);
+  const summarizeWindow =
+    (minutes) =>
+      summarizeCandles(
+        candles.filter((c) => {
+          const time = num(c?.t);
+
+          return (
+            time != null &&
+            time >=
+              now -
+                minutes *
+                  60_000
+          );
+        })
+      );
+
+  return {
+    m5: summarizeWindow(5),
+    m15: summarizeWindow(15),
+    m60: summarizeWindow(60),
+  };
 }
 
 export default async function handler(
@@ -565,30 +579,15 @@ coin = String(
 
     const [
       { data: book },
-      w5,
-      w15,
-      w60,
+      momentum,
     ] = await Promise.all([
       postInfo({
         type: "l2Book",
         coin: market.bookCoin,
       }),
 
-      candleWindow(
+      candleWindows(
         market.bookCoin,
-        5,
-        receivedAt
-      ),
-
-      candleWindow(
-        market.bookCoin,
-        15,
-        receivedAt
-      ),
-
-      candleWindow(
-        market.bookCoin,
-        60,
         receivedAt
       ),
     ]);
@@ -729,11 +728,7 @@ coin = String(
           },
         },
 
-        momentum: {
-          m5: w5,
-          m15: w15,
-          m60: w60,
-        },
+        momentum,
 
         timing: {
           bookTime,
