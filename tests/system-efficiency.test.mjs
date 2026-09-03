@@ -609,6 +609,117 @@ async function verifySignalRateLimitRecovery() {
   assert.ok(signalLog.durationMs >= 0);
 }
 
+async function verifySignalSingleCandleSnapshot() {
+  process.env.SIGNAL_RETRY_BASE_MS = "1";
+
+  let candleCalls = 0;
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(
+      String(url),
+      "https://api.hyperliquid.xyz/info"
+    );
+
+    const payload = JSON.parse(options.body);
+
+    if (payload.type === "metaAndAssetCtxs") {
+      return response([
+        {
+          universe: [{ name: "SUI" }],
+        },
+        [
+          {
+            markPx: "1",
+            oraclePx: "1",
+            funding: "0",
+            openInterest: "1",
+            dayNtlVlm: "1",
+            premium: "0",
+          },
+        ],
+      ]);
+    }
+
+    if (payload.type === "l2Book") {
+      return response({
+        levels: [
+          [{ px: "0.99", sz: "10" }],
+          [{ px: "1.01", sz: "10" }],
+        ],
+        time: Date.now(),
+      });
+    }
+
+    if (payload.type === "candleSnapshot") {
+      candleCalls += 1;
+      const endTime = payload.req.endTime;
+
+      assert.equal(payload.req.interval, "1m");
+      assert.equal(
+        endTime - payload.req.startTime,
+        62 * 60_000
+      );
+
+      return response([
+        {
+          t: endTime - 50 * 60_000,
+          o: "1",
+          c: "2",
+          h: "2",
+          l: "1",
+          v: "1",
+        },
+        {
+          t: endTime - 10 * 60_000,
+          o: "2",
+          c: "3",
+          h: "3",
+          l: "2",
+          v: "2",
+        },
+        {
+          t: endTime - 2 * 60_000,
+          o: "3",
+          c: "4",
+          h: "4",
+          l: "3",
+          v: "3",
+        },
+      ]);
+    }
+
+    throw new Error(
+      `unexpected payload ${JSON.stringify(payload)}`
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/signal.js",
+      "single-candle-snapshot"
+    );
+
+  const res = makeRes();
+  await handler(
+    {
+      url: "/api/signal?coin=SUI",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(candleCalls, 1);
+  assert.equal(res.body.momentum.m5.count, 1);
+  assert.equal(res.body.momentum.m15.count, 2);
+  assert.equal(res.body.momentum.m60.count, 3);
+  assert.equal(res.body.momentum.m5.open, 3);
+  assert.equal(res.body.momentum.m15.open, 2);
+  assert.equal(res.body.momentum.m60.open, 1);
+  assert.equal(res.body.momentum.m60.close, 4);
+  assert.equal(res.body.momentum.m60.volume, 6);
+}
+
 async function verifyIntelFailureLogging() {
   globalThis.fetch = async () =>
     response(
@@ -914,6 +1025,7 @@ test(
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
       await verifySignalRateLimitRecovery();
+      await verifySignalSingleCandleSnapshot();
       await verifyIntelFailureLogging();
       await verifyRankPersistenceSingleBatch();
     } finally {
