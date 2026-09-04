@@ -133,6 +133,17 @@ function parseRetryAfterMs(value) {
   );
 }
 
+function jitteredBackoffMs(backoffMs) {
+  return Math.max(
+    1,
+    Math.round(
+      backoffMs *
+        (0.75 +
+          Math.random() * 0.25)
+    )
+  );
+}
+
 async function fetchTextWithRateLimit(
   url,
   options
@@ -176,6 +187,11 @@ async function fetchTextWithRateLimit(
       RETRY_BASE_MS *
       2 ** retry;
 
+    const retryBackoffMs =
+      jitteredBackoffMs(
+        backoffMs
+      );
+
     const retryAfterMs =
       parseRetryAfterMs(
         result.retryAfter
@@ -183,7 +199,7 @@ async function fetchTextWithRateLimit(
 
     await sleep(
       Math.max(
-        backoffMs,
+        retryBackoffMs,
         retryAfterMs
       )
     );
