@@ -447,7 +447,13 @@ async function verifySignalRateLimitRecovery() {
 
   let bookAttempts = 0;
   let alwaysRateLimited = false;
+  let retryJitterCalls = 0;
   const starts = [];
+
+  Math.random = () => {
+    retryJitterCalls += 1;
+    return 0.5;
+  };
 
   globalThis.fetch = async (url, options = {}) => {
     assert.equal(
@@ -583,6 +589,7 @@ async function verifySignalRateLimitRecovery() {
   assert.equal(exhausted.statusCode, 500);
   assert.equal(exhausted.body.ok, false);
   assert.equal(bookAttempts, 5);
+  assert.equal(retryJitterCalls, 6);
   assert.match(
     exhausted.body.error,
     /HL 429/
@@ -1019,6 +1026,8 @@ test(
   async () => {
     const previousFetch =
       globalThis.fetch;
+    const previousRandom =
+      Math.random;
 
     try {
       await verifyPersistenceBatch();
@@ -1030,6 +1039,7 @@ test(
       await verifyRankPersistenceSingleBatch();
     } finally {
       globalThis.fetch = previousFetch;
+      Math.random = previousRandom;
       delete process.env.UPSTASH_QSTASH_TOKEN;
       delete process.env.STORAGE_REDIS_REST_URL;
       delete process.env.STORAGE_REDIS_REST_TOKEN;
