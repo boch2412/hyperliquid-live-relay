@@ -4,6 +4,7 @@ const FRESH_MS = 10_000;
 const API_CONCURRENCY = 2;
 const API_START_INTERVAL_MS = 200;
 const MAX_429_RETRIES = 4;
+const MARKET_CACHE_TTL_MS = 8_000;
 const RETRY_BASE_MS = Math.max(
   1,
   Number(
@@ -16,6 +17,8 @@ let apiNextStartAt = 0;
 let apiDrainTimer = null;
 
 const apiQueue = [];
+const marketMetadataCache = new Map();
+const marketMetadataInFlight = new Map();
 
 function sleep(ms) {
   return new Promise(
@@ -269,6 +272,60 @@ async function postInfo(payload) {
   };
 }
 
+function marketMetadataCacheKey(payload) {
+  if (payload?.type === "perpDexs") {
+    return "perpDexs";
+  }
+
+  if (payload?.type === "metaAndAssetCtxs") {
+    return `metaAndAssetCtxs:${payload.dex || "native"}`;
+  }
+
+  return null;
+}
+
+async function postMarketInfo(payload) {
+  const key = marketMetadataCacheKey(payload);
+
+  if (!key) {
+    return postInfo(payload);
+  }
+
+  const now = Date.now();
+  const cached = marketMetadataCache.get(key);
+
+  if (cached && now < cached.expiresAt) {
+    return cached.value;
+  }
+
+  if (cached) {
+    marketMetadataCache.delete(key);
+  }
+
+  const inFlight = marketMetadataInFlight.get(key);
+
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const promise = postInfo(payload)
+    .then((value) => {
+      marketMetadataCache.set(key, {
+        value,
+        expiresAt: Date.now() + MARKET_CACHE_TTL_MS,
+      });
+
+      return value;
+    })
+    .finally(() => {
+      marketMetadataInFlight.delete(key);
+    });
+
+  marketMetadataInFlight.set(key, promise);
+
+  return promise;
+}
+
 function parseMetaCtx(resp) {
   if (!Array.isArray(resp) || resp.length < 2) {
     return { universe: [], ctxs: [] };
@@ -305,7 +362,7 @@ function dexNames(resp) {
 
 async function resolveMarket(coin) {
   const native = parseMetaCtx(
-    (await postInfo({ type: "metaAndAssetCtxs" })).data
+    (await postMarketInfo({ type: "metaAndAssetCtxs" })).data
   );
 
   let i = native.universe.findIndex((u) =>
@@ -323,7 +380,7 @@ async function resolveMarket(coin) {
   }
 
   const dexResp = (
-    await postInfo({ type: "perpDexs" })
+    await postMarketInfo({ type: "perpDexs" })
   ).data;
 
   const ordered = [
@@ -334,7 +391,7 @@ async function resolveMarket(coin) {
     try {
       const parsed = parseMetaCtx(
         (
-          await postInfo({
+          await postMarketInfo({
             type: "metaAndAssetCtxs",
             dex,
           })

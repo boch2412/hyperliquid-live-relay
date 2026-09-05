@@ -727,6 +727,143 @@ async function verifySignalSingleCandleSnapshot() {
   assert.equal(res.body.momentum.m60.volume, 6);
 }
 
+async function verifySignalMarketMetadataCache() {
+  const calls = {
+    nativeMeta: 0,
+    perpDexs: 0,
+    dexMeta: 0,
+    l2Book: 0,
+    candleSnapshot: 0,
+  };
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(
+      String(url),
+      "https://api.hyperliquid.xyz/info"
+    );
+
+    const payload = JSON.parse(options.body);
+
+    if (payload.type === "metaAndAssetCtxs") {
+      if (!payload.dex) {
+        calls.nativeMeta += 1;
+        return response([
+          { universe: [] },
+          [],
+        ]);
+      }
+
+      calls.dexMeta += 1;
+      assert.equal(payload.dex, "xyz");
+
+      return response([
+        {
+          universe: [
+            { name: "xyz:MU" },
+            { name: "xyz:DRAM" },
+          ],
+        },
+        [
+          {
+            markPx: "100",
+            oraclePx: "100",
+            funding: "0",
+            openInterest: "1",
+            dayNtlVlm: "1",
+            premium: "0",
+          },
+          {
+            markPx: "200",
+            oraclePx: "200",
+            funding: "0",
+            openInterest: "1",
+            dayNtlVlm: "1",
+            premium: "0",
+          },
+        ],
+      ]);
+    }
+
+    if (payload.type === "perpDexs") {
+      calls.perpDexs += 1;
+      return response(["xyz"]);
+    }
+
+    if (payload.type === "l2Book") {
+      calls.l2Book += 1;
+      return response({
+        levels: [
+          [{ px: "99", sz: "10" }],
+          [{ px: "101", sz: "10" }],
+        ],
+        time: Date.now(),
+      });
+    }
+
+    if (payload.type === "candleSnapshot") {
+      calls.candleSnapshot += 1;
+      return response([
+        {
+          t: payload.req.endTime,
+          o: "100",
+          c: "100",
+          h: "100",
+          l: "100",
+          v: "1",
+        },
+      ]);
+    }
+
+    throw new Error(
+      `unexpected payload ${JSON.stringify(payload)}`
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/signal.js",
+      "market-metadata-cache"
+    );
+
+  const mu = makeRes();
+  const dram = makeRes();
+
+  await Promise.all([
+    handler(
+      { url: "/api/signal?coin=xyz:MU" },
+      mu
+    ),
+    handler(
+      { url: "/api/signal?coin=xyz:DRAM" },
+      dram
+    ),
+  ]);
+
+  assert.equal(mu.statusCode, 200);
+  assert.equal(dram.statusCode, 200);
+  assert.equal(mu.body.live, true);
+  assert.equal(dram.body.live, true);
+  assert.equal(calls.nativeMeta, 1);
+  assert.equal(calls.perpDexs, 1);
+  assert.equal(calls.dexMeta, 1);
+  assert.equal(calls.l2Book, 2);
+  assert.equal(calls.candleSnapshot, 2);
+
+  const repeated = makeRes();
+
+  await handler(
+    { url: "/api/signal?coin=xyz:MU" },
+    repeated
+  );
+
+  assert.equal(repeated.statusCode, 200);
+  assert.equal(calls.nativeMeta, 1);
+  assert.equal(calls.perpDexs, 1);
+  assert.equal(calls.dexMeta, 1);
+  assert.equal(calls.l2Book, 3);
+  assert.equal(calls.candleSnapshot, 3);
+}
+
 async function verifyIntelFailureLogging() {
   globalThis.fetch = async () =>
     response(
@@ -1035,6 +1172,7 @@ test(
       await verifySnapshotQuoteTimeout();
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
+      await verifySignalMarketMetadataCache();
       await verifyIntelFailureLogging();
       await verifyRankPersistenceSingleBatch();
     } finally {
