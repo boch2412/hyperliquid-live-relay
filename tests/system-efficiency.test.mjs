@@ -864,6 +864,79 @@ async function verifySignalMarketMetadataCache() {
   assert.equal(calls.candleSnapshot, 3);
 }
 
+async function verifySignalUpstreamTimeout() {
+  process.env.SIGNAL_API_TIMEOUT_MS = "25";
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(
+      String(url),
+      "https://api.hyperliquid.xyz/info"
+    );
+
+    return new Promise((resolve, reject) => {
+      const abort = () =>
+        reject(
+          options.signal.reason ??
+            new DOMException(
+              "Aborted",
+              "AbortError"
+            )
+        );
+
+      if (options.signal.aborted) {
+        abort();
+      } else {
+        options.signal.addEventListener(
+          "abort",
+          abort,
+          { once: true }
+        );
+      }
+    });
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/signal.js",
+      "upstream-timeout"
+    );
+
+  const signalLogs = [];
+  const previousConsoleError =
+    console.error;
+  const startedAt = performance.now();
+  const res = makeRes();
+
+  console.error = (message) => {
+    signalLogs.push(String(message));
+  };
+
+  try {
+    await handler(
+      { url: "/api/signal?coin=SUI" },
+      res
+    );
+  } finally {
+    console.error = previousConsoleError;
+  }
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /HL timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "signal timeout should fail promptly"
+  );
+  assert.equal(signalLogs.length, 1);
+  assert.match(
+    JSON.parse(signalLogs[0]).error,
+    /HL timeout after 25ms/
+  );
+}
+
 async function verifyIntelFailureLogging() {
   globalThis.fetch = async () =>
     response(
@@ -1173,6 +1246,7 @@ test(
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
       await verifySignalMarketMetadataCache();
+      await verifySignalUpstreamTimeout();
       await verifyIntelFailureLogging();
       await verifyRankPersistenceSingleBatch();
     } finally {
@@ -1183,6 +1257,7 @@ test(
       delete process.env.STORAGE_REDIS_REST_TOKEN;
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
+      delete process.env.SIGNAL_API_TIMEOUT_MS;
     }
   }
 );
