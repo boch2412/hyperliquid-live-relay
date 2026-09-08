@@ -6,6 +6,7 @@ import {
 } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 const ROOT = resolve(
   dirname(
@@ -13,6 +14,21 @@ const ROOT = resolve(
   ),
   ".."
 );
+
+async function verifyRuntimeCompatibilityPin() {
+  const pkg = JSON.parse(
+    await readFile(
+      resolve(ROOT, "package.json"),
+      "utf8"
+    )
+  );
+
+  assert.equal(
+    pkg.engines.node,
+    "22.x",
+    "Vercel must stay on the supported Node 22 runtime until the Node 24 DEP0169 source is resolved"
+  );
+}
 
 function response(data, status = 200) {
   return new Response(
@@ -1240,6 +1256,7 @@ test(
       Math.random;
 
     try {
+      await verifyRuntimeCompatibilityPin();
       await verifyPersistenceBatch();
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
