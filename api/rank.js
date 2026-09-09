@@ -19,6 +19,12 @@ const API_START_INTERVAL_MS = 200;
 const MAX_429_RETRIES = 4;
 const RETRY_BASE_MS = 500;
 const CACHE_TTL_MS = 8_000;
+const API_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env.RANK_API_TIMEOUT_MS
+  ) || 15_000
+);
 
 let apiActive = 0;
 let apiNextStartAt = 0;
@@ -156,23 +162,50 @@ async function fetchTextWithRateLimit(
     const result =
       await scheduleApiRequest(
         async () => {
-          const r = await fetch(
-            url,
-            options
-          );
+          const controller =
+            new AbortController();
+          const timeout =
+            setTimeout(
+              () =>
+                controller.abort(),
+              API_TIMEOUT_MS
+            );
 
-          const text =
-            await r.text();
+          try {
+            const r = await fetch(
+              url,
+              {
+                ...options,
+                signal:
+                  controller.signal,
+              }
+            );
 
-          return {
-            ok: r.ok,
-            status: r.status,
-            text,
-            retryAfter:
-              r.headers.get(
-                "retry-after"
-              ),
-          };
+            const text =
+              await r.text();
+
+            return {
+              ok: r.ok,
+              status: r.status,
+              text,
+              retryAfter:
+                r.headers.get(
+                  "retry-after"
+                ),
+            };
+          } catch (error) {
+            if (
+              controller.signal.aborted
+            ) {
+              throw new Error(
+                `rank API timeout after ${API_TIMEOUT_MS}ms`
+              );
+            }
+
+            throw error;
+          } finally {
+            clearTimeout(timeout);
+          }
         }
       );
 
