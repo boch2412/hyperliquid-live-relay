@@ -1247,6 +1247,53 @@ async function verifyRankPersistenceSingleBatch() {
   );
 }
 
+async function verifyRankUpstreamTimeout() {
+  process.env.RANK_API_TIMEOUT_MS = "25";
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      options.signal.addEventListener(
+        "abort",
+        () =>
+          reject(
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+          ),
+        { once: true }
+      );
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/rank.js",
+      "upstream-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      url: "/api/rank?mode=universe",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /rank API timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "rank should not wait indefinitely for a stalled upstream"
+  );
+}
+
 test(
   "daytrade efficiency invariants",
   async () => {
@@ -1266,6 +1313,7 @@ test(
       await verifySignalUpstreamTimeout();
       await verifyIntelFailureLogging();
       await verifyRankPersistenceSingleBatch();
+      await verifyRankUpstreamTimeout();
     } finally {
       globalThis.fetch = previousFetch;
       Math.random = previousRandom;
@@ -1275,6 +1323,7 @@ test(
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;
+      delete process.env.RANK_API_TIMEOUT_MS;
     }
   }
 );
