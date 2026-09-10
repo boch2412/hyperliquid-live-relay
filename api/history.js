@@ -5,6 +5,13 @@ function envFirst(names) {
   return null;
 }
 
+const REDIS_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env.HISTORY_REDIS_TIMEOUT_MS
+  ) || 8_000
+);
+
 function redisConfig() {
   const url =
     envFirst([
@@ -51,17 +58,40 @@ async function redis(cmd) {
     );
   }
 
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(cmd),
-    cache: "no-store",
-  });
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    REDIS_TIMEOUT_MS
+  );
 
-  const text = await r.text();
+  let r;
+  let text;
+
+  try {
+    r = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(cmd),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    text = await r.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Redis timeout after ${REDIS_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!r.ok) {
     throw new Error(

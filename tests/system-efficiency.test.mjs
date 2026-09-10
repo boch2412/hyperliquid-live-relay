@@ -1015,6 +1015,57 @@ async function verifyIntelFailureLogging() {
   assert.ok(intelLog.durationMs >= 0);
 }
 
+async function verifyHistoryRedisTimeout() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.HISTORY_REDIS_TIMEOUT_MS = "25";
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      options.signal.addEventListener(
+        "abort",
+        () =>
+          reject(
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+          ),
+        { once: true }
+      );
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/history.js",
+      "redis-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      url: "/api/history?coin=SUI",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /Redis timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "history should not wait indefinitely for Redis"
+  );
+}
+
 function makeIntel(coin) {
   const window = {
     ready: true,
@@ -1312,6 +1363,7 @@ test(
       await verifySignalMarketMetadataCache();
       await verifySignalUpstreamTimeout();
       await verifyIntelFailureLogging();
+      await verifyHistoryRedisTimeout();
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
     } finally {
@@ -1324,6 +1376,7 @@ test(
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;
       delete process.env.RANK_API_TIMEOUT_MS;
+      delete process.env.HISTORY_REDIS_TIMEOUT_MS;
     }
   }
 );
