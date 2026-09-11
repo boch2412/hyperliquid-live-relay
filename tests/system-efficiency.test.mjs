@@ -167,6 +167,61 @@ async function verifyPersistenceBatch() {
   );
 }
 
+async function verifyPersistenceRedisTimeout() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.PERSISTENCE_REDIS_TIMEOUT_MS =
+    "25";
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      options.signal.addEventListener(
+        "abort",
+        () =>
+          reject(
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+          ),
+        { once: true }
+      );
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/persistence.js",
+      "redis-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      query: {
+        mode: "watchrank",
+        coins: "SUI",
+      },
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /Redis timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "persistence should not wait indefinitely for Redis"
+  );
+}
+
 async function verifySnapshotCoverageAndConcurrency() {
   const token = "qstash-test-token";
   process.env.UPSTASH_QSTASH_TOKEN = token;
@@ -1356,6 +1411,7 @@ test(
     try {
       await verifyRuntimeCompatibilityPin();
       await verifyPersistenceBatch();
+      await verifyPersistenceRedisTimeout();
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
       await verifySignalRateLimitRecovery();
@@ -1377,6 +1433,7 @@ test(
       delete process.env.SIGNAL_API_TIMEOUT_MS;
       delete process.env.RANK_API_TIMEOUT_MS;
       delete process.env.HISTORY_REDIS_TIMEOUT_MS;
+      delete process.env.PERSISTENCE_REDIS_TIMEOUT_MS;
     }
   }
 );
