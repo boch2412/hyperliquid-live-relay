@@ -11,6 +11,14 @@ const LOOKBACK_MS =
 
 const MAX_RECORDS = 6;
 
+const REDIS_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env
+      .PERSISTENCE_REDIS_TIMEOUT_MS
+  ) || 8_000
+);
+
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
@@ -78,26 +86,53 @@ async function redis(cmd) {
     );
   }
 
-  const r = await fetch(url, {
-    method: "POST",
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    REDIS_TIMEOUT_MS
+  );
 
-    headers: {
-      Authorization:
-        `Bearer ${token}`,
+  let r;
+  let text;
 
-      "Content-Type":
-        "application/json",
-    },
+  try {
+    r = await fetch(url, {
+      method: "POST",
 
-    body:
-      JSON.stringify(cmd),
+      headers: {
+        Authorization:
+          `Bearer ${token}`,
 
-    cache:
-      "no-store",
-  });
+        "Content-Type":
+          "application/json",
+      },
 
-  const text =
-    await r.text();
+      body:
+        JSON.stringify(cmd),
+
+      cache:
+        "no-store",
+
+      signal:
+        controller.signal,
+    });
+
+    text =
+      await r.text();
+  } catch (error) {
+    if (
+      controller.signal.aborted
+    ) {
+      throw new Error(
+        `Redis timeout after ${REDIS_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!r.ok) {
     throw new Error(
