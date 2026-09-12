@@ -513,6 +513,79 @@ async function verifySnapshotQuoteTimeout() {
   );
 }
 
+async function verifySnapshotRedisTimeout() {
+  const token =
+    "qstash-redis-timeout-token";
+  process.env.UPSTASH_QSTASH_TOKEN = token;
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.SNAPSHOT_REDIS_TIMEOUT_MS =
+    "25";
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(
+      String(url),
+      "https://redis.test"
+    );
+
+    return new Promise((resolve, reject) => {
+      const abort = () =>
+        reject(
+          options.signal.reason ??
+            new DOMException(
+              "Aborted",
+              "AbortError"
+            )
+        );
+
+      if (options.signal.aborted) {
+        abort();
+      } else {
+        options.signal.addEventListener(
+          "abort",
+          abort,
+          { once: true }
+        );
+      }
+    });
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/snapshot.js",
+      "redis-timeout"
+    );
+
+  const supplied = createHash("sha256")
+    .update(token)
+    .digest("hex");
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      query: {},
+      headers: {
+        "x-snapshot-key": supplied,
+      },
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /Redis timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "snapshot Redis timeout should fail quickly"
+  );
+}
+
 async function verifySignalRateLimitRecovery() {
   process.env.SIGNAL_RETRY_BASE_MS = "1";
 
@@ -1414,6 +1487,7 @@ test(
       await verifyPersistenceRedisTimeout();
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
+      await verifySnapshotRedisTimeout();
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
       await verifySignalMarketMetadataCache();
@@ -1429,6 +1503,7 @@ test(
       delete process.env.STORAGE_REDIS_REST_URL;
       delete process.env.STORAGE_REDIS_REST_TOKEN;
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
+      delete process.env.SNAPSHOT_REDIS_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;
       delete process.env.RANK_API_TIMEOUT_MS;
