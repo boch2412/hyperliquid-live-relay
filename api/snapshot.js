@@ -20,6 +20,18 @@ const SNAPSHOT_QUOTE_TIMEOUT_MS =
   configuredQuoteTimeoutMs > 0
     ? configuredQuoteTimeoutMs
     : 8_000;
+const configuredRedisTimeoutMs =
+  Number(
+    process.env
+      .SNAPSHOT_REDIS_TIMEOUT_MS
+  );
+const SNAPSHOT_REDIS_TIMEOUT_MS =
+  Number.isFinite(
+    configuredRedisTimeoutMs
+  ) &&
+  configuredRedisTimeoutMs > 0
+    ? configuredRedisTimeoutMs
+    : 8_000;
 
 async function mapLimit(
   items,
@@ -497,15 +509,33 @@ async function redis(cmd) {
     throw new Error("Redis environment variables not found");
   }
 
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(cmd),
-    cache: "no-store",
-  });
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () =>
+      controller.abort(
+        new Error(
+          `Redis timeout after ${SNAPSHOT_REDIS_TIMEOUT_MS}ms`
+        )
+      ),
+    SNAPSHOT_REDIS_TIMEOUT_MS
+  );
+  let r;
+
+  try {
+    r = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(cmd),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text = await r.text();
 
