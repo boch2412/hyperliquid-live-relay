@@ -586,6 +586,90 @@ async function verifySnapshotRedisTimeout() {
   );
 }
 
+async function verifyPersistRedisTimeout() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.PERSIST_REDIS_TIMEOUT_MS =
+    "25";
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+
+    if (
+      value.endsWith("/api/rank")
+    ) {
+      return response({
+        ok: true,
+        ranking: [
+          {
+            coin: "SUI",
+            bias: "LONG",
+            compositeScore: 0.8,
+            confidence: 80,
+            opportunity: 0.7,
+            threshold: 0.68,
+          },
+        ],
+      });
+    }
+
+    assert.equal(
+      value,
+      "https://redis.test"
+    );
+
+    return new Promise((resolve, reject) => {
+      const abort = () =>
+        reject(
+          options.signal.reason ??
+            new DOMException(
+              "Aborted",
+              "AbortError"
+            )
+        );
+
+      if (options.signal.aborted) {
+        abort();
+      } else {
+        options.signal.addEventListener(
+          "abort",
+          abort,
+          { once: true }
+        );
+      }
+    });
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/persist.js",
+      "redis-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      query: {},
+      headers: {},
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /Redis timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "persist should not wait indefinitely for Redis"
+  );
+}
+
 async function verifySignalRateLimitRecovery() {
   process.env.SIGNAL_RETRY_BASE_MS = "1";
 
@@ -1488,6 +1572,7 @@ test(
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();
+      await verifyPersistRedisTimeout();
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
       await verifySignalMarketMetadataCache();
@@ -1504,6 +1589,7 @@ test(
       delete process.env.STORAGE_REDIS_REST_TOKEN;
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
       delete process.env.SNAPSHOT_REDIS_TIMEOUT_MS;
+      delete process.env.PERSIST_REDIS_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;
       delete process.env.RANK_API_TIMEOUT_MS;
