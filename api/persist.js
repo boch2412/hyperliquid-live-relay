@@ -3,6 +3,13 @@ const BASE =
 
 const KEEP_MS =
   24 * 60 * 60 * 1000;
+const REDIS_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env
+      .PERSIST_REDIS_TIMEOUT_MS
+  ) || 8_000
+);
 
 function envFirst(names) {
   for (const n of names) {
@@ -61,23 +68,43 @@ async function redis(cmd) {
     );
   }
 
-  const r = await fetch(url, {
-    method: "POST",
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () =>
+      controller.abort(
+        new Error(
+          `Redis timeout after ${REDIS_TIMEOUT_MS}ms`
+        )
+      ),
+    REDIS_TIMEOUT_MS
+  );
+  let r;
 
-    headers: {
-      Authorization:
-        `Bearer ${token}`,
+  try {
+    r = await fetch(url, {
+      method: "POST",
 
-      "Content-Type":
-        "application/json",
-    },
+      headers: {
+        Authorization:
+          `Bearer ${token}`,
 
-    body:
-      JSON.stringify(cmd),
+        "Content-Type":
+          "application/json",
+      },
 
-    cache:
-      "no-store",
-  });
+      body:
+        JSON.stringify(cmd),
+
+      cache:
+        "no-store",
+
+      signal:
+        controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text =
     await r.text();
