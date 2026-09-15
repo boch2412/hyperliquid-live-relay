@@ -1,5 +1,12 @@
 const HL_INFO = "https://api.hyperliquid.xyz/info";
 const FRESH_MS = 10_000;
+const API_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env
+      .QUOTE_API_TIMEOUT_MS
+  ) || 8_000
+);
 
 function num(v) {
   const x = Number(v);
@@ -19,13 +26,37 @@ function bps(a, b) {
 }
 async function postInfo(payload) {
   const t0 = Date.now();
-  const r = await fetch(HL_INFO, {
-    method: "POST",
-    headers: {"content-type":"application/json"},
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
-  const text = await r.text();
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    API_TIMEOUT_MS
+  );
+
+  let r;
+  let text;
+
+  try {
+    r = await fetch(HL_INFO, {
+      method: "POST",
+      headers: {"content-type":"application/json"},
+      body: JSON.stringify(payload),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    text = await r.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `quote API timeout after ${API_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
   let data = null;
   try { data = JSON.parse(text); } catch {}
   if (!r.ok) throw new Error(`HL ${r.status}: ${text.slice(0,200)}`);
