@@ -1330,6 +1330,54 @@ async function verifyDecisionLogRedisTimeout() {
   );
 }
 
+async function verifyQuoteUpstreamTimeout() {
+  process.env.QUOTE_API_TIMEOUT_MS = "25";
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      options.signal.addEventListener(
+        "abort",
+        () =>
+          reject(
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+          ),
+        { once: true }
+      );
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/quote.js",
+      "upstream-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      url: "/api/quote?coin=SUI",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.live, false);
+  assert.match(
+    res.body.error,
+    /quote API timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "quote should not wait indefinitely for a stalled upstream"
+  );
+}
+
 function makeIntel(coin) {
   const window = {
     ready: true,
@@ -1632,6 +1680,7 @@ test(
       await verifyIntelFailureLogging();
       await verifyHistoryRedisTimeout();
       await verifyDecisionLogRedisTimeout();
+      await verifyQuoteUpstreamTimeout();
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
     } finally {
@@ -1648,6 +1697,7 @@ test(
       delete process.env.RANK_API_TIMEOUT_MS;
       delete process.env.HISTORY_REDIS_TIMEOUT_MS;
       delete process.env.DECISION_LOG_REDIS_TIMEOUT_MS;
+      delete process.env.QUOTE_API_TIMEOUT_MS;
       delete process.env.PERSISTENCE_REDIS_TIMEOUT_MS;
     }
   }
