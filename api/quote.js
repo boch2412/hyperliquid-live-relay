@@ -1,5 +1,6 @@
 const HL_INFO = "https://api.hyperliquid.xyz/info";
 const FRESH_MS = 10_000;
+const MAX_429_RETRIES = 4;
 const API_TIMEOUT_MS = Math.max(
   1,
   Number(
@@ -7,6 +8,43 @@ const API_TIMEOUT_MS = Math.max(
       .QUOTE_API_TIMEOUT_MS
   ) || 8_000
 );
+const RETRY_BASE_MS = Math.max(
+  1,
+  Number(
+    process.env
+      .QUOTE_RETRY_BASE_MS
+  ) || 500
+);
+
+function sleep(ms) {
+  return new Promise(
+    (resolve) => setTimeout(resolve, ms)
+  );
+}
+
+function parseRetryAfterMs(value) {
+  if (!value) return 0;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) return 0;
+
+  return Math.max(0, retryAt - Date.now());
+}
+
+function jitteredBackoffMs(backoffMs) {
+  return Math.max(
+    1,
+    Math.round(
+      backoffMs *
+        (0.75 + Math.random() * 0.25)
+    )
+  );
+}
 
 function num(v) {
   const x = Number(v);
@@ -26,35 +64,60 @@ function bps(a, b) {
 }
 async function postInfo(payload) {
   const t0 = Date.now();
-  const controller =
-    new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    API_TIMEOUT_MS
-  );
 
   let r;
-  let text;
+  let text = "";
 
-  try {
-    r = await fetch(HL_INFO, {
-      method: "POST",
-      headers: {"content-type":"application/json"},
-      body: JSON.stringify(payload),
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    text = await r.text();
-  } catch (error) {
-    if (controller.signal.aborted) {
-      throw new Error(
-        `quote API timeout after ${API_TIMEOUT_MS}ms`
-      );
+  for (
+    let retry = 0;
+    retry <= MAX_429_RETRIES;
+    retry += 1
+  ) {
+    const controller =
+      new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      API_TIMEOUT_MS
+    );
+
+    try {
+      r = await fetch(HL_INFO, {
+        method: "POST",
+        headers: {"content-type":"application/json"},
+        body: JSON.stringify(payload),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      text = await r.text();
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new Error(
+          `quote API timeout after ${API_TIMEOUT_MS}ms`
+        );
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
 
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+    if (
+      r.status !== 429 ||
+      retry >= MAX_429_RETRIES
+    ) {
+      break;
+    }
+
+    const retryAfterMs = parseRetryAfterMs(
+      r.headers.get("retry-after")
+    );
+    const backoffMs = jitteredBackoffMs(
+      RETRY_BASE_MS * 2 ** retry
+    );
+
+    await sleep(
+      Math.max(backoffMs, retryAfterMs)
+    );
   }
 
   let data = null;

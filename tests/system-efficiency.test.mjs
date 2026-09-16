@@ -1378,6 +1378,95 @@ async function verifyQuoteUpstreamTimeout() {
   );
 }
 
+async function verifyQuoteRateLimitRecovery() {
+  process.env.QUOTE_RETRY_BASE_MS = "1";
+
+  let nativeMetaAttempts = 0;
+  let fetchCalls = 0;
+
+  globalThis.fetch = async (
+    url,
+    options = {}
+  ) => {
+    assert.equal(
+      String(url),
+      "https://api.hyperliquid.xyz/info"
+    );
+
+    fetchCalls += 1;
+    const payload = JSON.parse(options.body);
+
+    if (payload.type === "metaAndAssetCtxs") {
+      nativeMetaAttempts += 1;
+
+      if (nativeMetaAttempts <= 4) {
+        return new Response(
+          JSON.stringify({ error: "rate limited" }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "0",
+            },
+          }
+        );
+      }
+
+      return response([
+        { universe: [{ name: "SUI" }] },
+        [
+          {
+            markPx: "1",
+            oraclePx: "1",
+            funding: "0",
+            openInterest: "1",
+            dayNtlVlm: "1",
+            premium: "0",
+          },
+        ],
+      ]);
+    }
+
+    if (payload.type === "allMids") {
+      return response({ SUI: "1" });
+    }
+
+    if (payload.type === "l2Book") {
+      return response({
+        levels: [
+          [{ px: "0.99", sz: "10" }],
+          [{ px: "1.01", sz: "10" }],
+        ],
+        time: Date.now(),
+      });
+    }
+
+    throw new Error(
+      `unexpected payload ${JSON.stringify(payload)}`
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/quote.js",
+      "rate-limit-recovery"
+    );
+  const res = makeRes();
+
+  await handler(
+    {
+      url: "/api/quote?coin=SUI",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.live, true);
+  assert.equal(nativeMetaAttempts, 5);
+  assert.equal(fetchCalls, 7);
+}
+
 function makeIntel(coin) {
   const window = {
     ready: true,
@@ -1681,6 +1770,7 @@ test(
       await verifyHistoryRedisTimeout();
       await verifyDecisionLogRedisTimeout();
       await verifyQuoteUpstreamTimeout();
+      await verifyQuoteRateLimitRecovery();
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
     } finally {
@@ -1698,6 +1788,7 @@ test(
       delete process.env.HISTORY_REDIS_TIMEOUT_MS;
       delete process.env.DECISION_LOG_REDIS_TIMEOUT_MS;
       delete process.env.QUOTE_API_TIMEOUT_MS;
+      delete process.env.QUOTE_RETRY_BASE_MS;
       delete process.env.PERSISTENCE_REDIS_TIMEOUT_MS;
     }
   }
