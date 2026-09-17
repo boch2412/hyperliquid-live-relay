@@ -1278,6 +1278,50 @@ async function verifyHistoryRedisTimeout() {
   );
 }
 
+async function verifyHistoryDexMarketKey() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+
+  let requestedKey = null;
+
+  globalThis.fetch = async (
+    url,
+    options = {}
+  ) => {
+    assert.equal(
+      String(url),
+      "https://redis.test"
+    );
+
+    const command = JSON.parse(options.body);
+    assert.equal(command[0], "ZRANGEBYSCORE");
+    requestedKey = command[1];
+
+    return response({ result: [] });
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/history.js",
+      "dex-market-key"
+    );
+  const res = makeRes();
+
+  await handler(
+    {
+      url: "/api/history?coin=XYZ%3Amu",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.coin, "xyz:MU");
+  assert.equal(requestedKey, "hl:snap:xyz:MU");
+}
+
 async function verifyDecisionLogRedisTimeout() {
   process.env.STORAGE_REDIS_REST_URL =
     "https://redis.test";
@@ -1768,6 +1812,7 @@ test(
       await verifySignalUpstreamTimeout();
       await verifyIntelFailureLogging();
       await verifyHistoryRedisTimeout();
+      await verifyHistoryDexMarketKey();
       await verifyDecisionLogRedisTimeout();
       await verifyQuoteUpstreamTimeout();
       await verifyQuoteRateLimitRecovery();
