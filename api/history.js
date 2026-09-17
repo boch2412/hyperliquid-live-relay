@@ -118,6 +118,27 @@ function parseRecord(v) {
   }
 }
 
+function normalizeCoin(v) {
+  const raw = String(v || "").trim();
+
+  if (!raw) return "";
+
+  const separator = raw.indexOf(":");
+
+  if (separator < 0) {
+    return raw.toUpperCase();
+  }
+
+  const dex = raw
+    .slice(0, separator)
+    .toLowerCase();
+  const asset = raw
+    .slice(separator + 1)
+    .toUpperCase();
+
+  return `${dex}:${asset}`;
+}
+
 function pct(now, before) {
   const a = Number(now);
   const b = Number(before);
@@ -276,11 +297,9 @@ export default async function handler(
   "https://hyperliquid-live-relay.vercel.app"
 );
 
-const coin = String(
-  url.searchParams.get("coin") || ""
-)
-  .trim()
-  .toUpperCase();
+const coin = normalizeCoin(
+  url.searchParams.get("coin")
+);
 
     if (!coin) {
       return res.status(400).json({
