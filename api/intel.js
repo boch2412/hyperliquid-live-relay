@@ -1,5 +1,11 @@
 // Vercel auto-deploy enabled
 const BASE = "https://hyperliquid-live-relay.vercel.app";
+const INTERNAL_API_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env.INTEL_API_TIMEOUT_MS
+  ) || 15_000
+);
 
 function normalizeCoin(v) {
   return String(v || "").trim();
@@ -146,11 +152,34 @@ function overall(history, live) {
 }
 
 async function getJSON(path) {
-  const r = await fetch(`${BASE}${path}`, {
-    cache: "no-store",
-  });
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    INTERNAL_API_TIMEOUT_MS
+  );
 
-  const text = await r.text();
+  let r;
+  let text;
+
+  try {
+    r = await fetch(`${BASE}${path}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    text = await r.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `${path} timeout after ${INTERNAL_API_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   let data = null;
 
