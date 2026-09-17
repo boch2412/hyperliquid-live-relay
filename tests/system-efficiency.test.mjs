@@ -1227,6 +1227,72 @@ async function verifyIntelFailureLogging() {
   assert.ok(intelLog.durationMs >= 0);
 }
 
+async function verifyIntelUpstreamTimeout() {
+  process.env.INTEL_API_TIMEOUT_MS = "25";
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      options.signal.addEventListener(
+        "abort",
+        () =>
+          reject(
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+          ),
+        { once: true }
+      );
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/intel.js",
+      "upstream-timeout"
+    );
+  const intelLogs = [];
+  const previousConsoleError =
+    console.error;
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  console.error = (message) => {
+    intelLogs.push(String(message));
+  };
+
+  try {
+    await handler(
+      {
+        query: {
+          coin: "SUI",
+        },
+      },
+      res
+    );
+  } finally {
+    console.error = previousConsoleError;
+  }
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /timeout after 25ms/
+  );
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "intel should not wait indefinitely for an internal API"
+  );
+  assert.equal(intelLogs.length, 1);
+  assert.match(
+    JSON.parse(intelLogs[0]).error,
+    /timeout after 25ms/
+  );
+}
+
 async function verifyHistoryRedisTimeout() {
   process.env.STORAGE_REDIS_REST_URL =
     "https://redis.test";
@@ -1767,6 +1833,7 @@ test(
       await verifySignalMarketMetadataCache();
       await verifySignalUpstreamTimeout();
       await verifyIntelFailureLogging();
+      await verifyIntelUpstreamTimeout();
       await verifyHistoryRedisTimeout();
       await verifyDecisionLogRedisTimeout();
       await verifyQuoteUpstreamTimeout();
@@ -1784,6 +1851,7 @@ test(
       delete process.env.PERSIST_REDIS_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;
+      delete process.env.INTEL_API_TIMEOUT_MS;
       delete process.env.RANK_API_TIMEOUT_MS;
       delete process.env.HISTORY_REDIS_TIMEOUT_MS;
       delete process.env.DECISION_LOG_REDIS_TIMEOUT_MS;
