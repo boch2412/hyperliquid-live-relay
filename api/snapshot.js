@@ -8,6 +8,18 @@ const BASE_COINS = [
 ];
 
 const SNAPSHOT_QUOTE_CONCURRENCY = 2;
+const configuredRankTimeoutMs =
+  Number(
+    process.env
+      .SNAPSHOT_RANK_TIMEOUT_MS
+  );
+const SNAPSHOT_RANK_TIMEOUT_MS =
+  Number.isFinite(
+    configuredRankTimeoutMs
+  ) &&
+  configuredRankTimeoutMs > 0
+    ? configuredRankTimeoutMs
+    : 30_000;
 const configuredQuoteTimeoutMs =
   Number(
     process.env
@@ -75,10 +87,30 @@ async function mapLimit(
 
 async function getDynamicCoins() {
   try {
-    const r = await fetch(
-      `${BASE}/api/rank?mode=screener&limit=18`,
-      { cache: "no-store" }
+    const controller =
+      new AbortController();
+    const timeout = setTimeout(
+      () =>
+        controller.abort(
+          new Error(
+            `snapshot rank timeout after ${SNAPSHOT_RANK_TIMEOUT_MS}ms`
+          )
+        ),
+      SNAPSHOT_RANK_TIMEOUT_MS
     );
+    let r;
+
+    try {
+      r = await fetch(
+        `${BASE}/api/rank?mode=screener&limit=18`,
+        {
+          cache: "no-store",
+          signal: controller.signal,
+        }
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const text = await r.text();
 
