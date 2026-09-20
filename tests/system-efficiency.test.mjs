@@ -380,6 +380,65 @@ async function verifySnapshotCoverageAndConcurrency() {
   }
 }
 
+async function verifySnapshotLockSkipsDownstreamWork() {
+  const token = "qstash-lock-skip-token";
+  process.env.UPSTASH_QSTASH_TOKEN = token;
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+
+  let downstreamCalls = 0;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+
+    if (value === "https://redis.test") {
+      const command = JSON.parse(options.body);
+      assert.equal(command[0], "SET");
+      return response({ result: null });
+    }
+
+    if (
+      value.endsWith("/api/persist") ||
+      value.endsWith("/api/decision-log")
+    ) {
+      downstreamCalls += 1;
+      return response({ ok: true });
+    }
+
+    throw new Error(`unexpected fetch ${value}`);
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/snapshot.js",
+      "lock-skip"
+    );
+
+  const supplied = createHash("sha256")
+    .update(token)
+    .digest("hex");
+  const res = makeRes();
+
+  await handler(
+    {
+      query: {},
+      headers: {
+        "x-snapshot-key": supplied,
+      },
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.skipped, true);
+  assert.equal(res.body.persistence.skipped, true);
+  assert.equal(res.body.decisionLog.skipped, true);
+  assert.equal(downstreamCalls, 0);
+}
+
 async function verifySnapshotRankTimeout() {
   const token =
     "qstash-rank-timeout-token";
@@ -1983,6 +2042,7 @@ test(
       await verifyPersistenceBatch();
       await verifyPersistenceRedisTimeout();
       await verifySnapshotCoverageAndConcurrency();
+      await verifySnapshotLockSkipsDownstreamWork();
       await verifySnapshotRankTimeout();
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();

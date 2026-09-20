@@ -1055,14 +1055,29 @@ export default async function handler(req, res) {
     }
 
     const result = await saveSnapshot();
-const persistence = await saveRankPersistence();
-const decisionLog = await saveDecisionLog();
 
-return res.status(200).json({
-  ...result,
-  persistence,
-  decisionLog,
-});
+    if (result.skipped) {
+      const skipped = {
+        ok: true,
+        skipped: true,
+        reason: result.reason,
+      };
+
+      return res.status(200).json({
+        ...result,
+        persistence: skipped,
+        decisionLog: { ...skipped },
+      });
+    }
+
+    const persistence = await saveRankPersistence();
+    const decisionLog = await saveDecisionLog();
+
+    return res.status(200).json({
+      ...result,
+      persistence,
+      decisionLog,
+    });
   } catch (e) {
     return res.status(500).json({
       ok: false,
