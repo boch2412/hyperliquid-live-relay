@@ -1408,6 +1408,101 @@ async function verifyIntelFailureLogging() {
   assert.ok(intelLog.durationMs >= 0);
 }
 
+async function verifyIntelRedisQuotaFallback() {
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+
+    if (value.includes("/api/signal?coin=SUI")) {
+      return response({
+        ok: true,
+        live: true,
+        market: { coin: "SUI" },
+        price: {
+          bid: 0.99,
+          ask: 1.01,
+          mid: 1,
+        },
+        context: {},
+        orderBook: {
+          top5: { imbalance: 0.1 },
+        },
+        momentum: {},
+        timing: { freshnessMs: 0 },
+      });
+    }
+
+    if (value.includes("/api/history?coin=SUI")) {
+      return response(
+        {
+          ok: false,
+          error:
+            "ERR max requests limit exceeded. Limit: 500000, Usage: 500000",
+        },
+        500
+      );
+    }
+
+    throw new Error(`unexpected fetch ${value}`);
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/intel.js",
+      "redis-quota-fallback"
+    );
+
+  const warnings = [];
+  const previousConsoleWarn = console.warn;
+  const res = makeRes();
+
+  console.warn = (message) => {
+    warnings.push(String(message));
+  };
+
+  try {
+    await handler(
+      {
+        query: {
+          coin: "SUI",
+        },
+      },
+      res
+    );
+  } finally {
+    console.warn = previousConsoleWarn;
+  }
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.live.valid, true);
+  assert.equal(res.body.history.ready, false);
+  assert.equal(res.body.analysis.bias, "WAIT");
+  assert.equal(res.body.quality.historyAvailable, false);
+  assert.equal(res.body.quality.full60mReady, false);
+  assert.equal(res.body.quality.historyDegraded, true);
+  assert.match(
+    res.body.quality.historyError,
+    /max requests limit exceeded/
+  );
+  assert.equal(warnings.length, 1);
+
+  const warning = JSON.parse(warnings[0]);
+  assert.deepEqual(
+    {
+      level: warning.level,
+      event: warning.event,
+      route: warning.route,
+      coin: warning.coin,
+    },
+    {
+      level: "warning",
+      event: "intel_history_degraded",
+      route: "/api/intel",
+      coin: "SUI",
+    }
+  );
+}
+
 async function verifyIntelInternalTimeout() {
   process.env.INTEL_API_TIMEOUT_MS = "25";
 
@@ -2052,6 +2147,7 @@ test(
       await verifySignalMarketMetadataCache();
       await verifySignalUpstreamTimeout();
       await verifyIntelFailureLogging();
+      await verifyIntelRedisQuotaFallback();
       await verifyIntelInternalTimeout();
       await verifyHistoryRedisTimeout();
       await verifyHistoryDexMarketKey();
