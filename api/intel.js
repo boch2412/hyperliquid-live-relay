@@ -195,6 +195,45 @@ async function getJSON(path) {
   return data;
 }
 
+function isRedisQuotaError(error) {
+  return /max requests limit exceeded/i.test(
+    String(error)
+  );
+}
+
+async function getHistoryWithFallback(
+  path,
+  coin
+) {
+  try {
+    return {
+      data: await getJSON(path),
+      error: null,
+    };
+  } catch (error) {
+    if (!isRedisQuotaError(error)) {
+      throw error;
+    }
+
+    const message = String(error);
+
+    console.warn(
+      JSON.stringify({
+        level: "warning",
+        event: "intel_history_degraded",
+        route: "/api/intel",
+        coin,
+        error: message,
+      })
+    );
+
+    return {
+      data: null,
+      error: message,
+    };
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
@@ -213,11 +252,16 @@ export default async function handler(req, res) {
 
     const encoded = encodeURIComponent(coin);
 
-    const [live, history] =
+    const [live, historyResult] =
       await Promise.all([
         getJSON(`/api/signal?coin=${encoded}`),
-        getJSON(`/api/history?coin=${encoded}`),
+        getHistoryWithFallback(
+          `/api/history?coin=${encoded}`,
+          coin
+        ),
       ]);
+
+    const history = historyResult.data;
 
     const analysis = overall(
       history,
@@ -280,6 +324,12 @@ export default async function handler(req, res) {
         full60mReady:
           history?.windows?.m60
             ?.ready === true,
+
+        historyDegraded:
+          historyResult.error != null,
+
+        historyError:
+          historyResult.error,
       },
 
       receivedAt,
