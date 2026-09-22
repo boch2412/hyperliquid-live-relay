@@ -1708,6 +1708,346 @@ async function verifyDecisionLogRedisTimeout() {
   );
 }
 
+function decisionLogRows() {
+  const now = Date.now();
+
+  return [0.62, 0.71, 0.84].map(
+    (compositeScore, index) =>
+      JSON.stringify({
+        t:
+          now -
+          (2 - index) *
+            5 * 60 * 1000,
+        coin: "BTC",
+        bias: "LONG",
+        compositeScore,
+        confidence: 80,
+        opportunity: 0.75,
+        executionQuality: {
+          score: 0.9,
+        },
+        volatility: {
+          baselinePct: 0.3,
+          observedPct: 0.25,
+        },
+        marketSnapshot: {
+          price: {
+            bid: 99.9,
+            ask: 100.1,
+            mid: 100,
+            spreadBps: 20,
+          },
+          momentum: {
+            m5: null,
+            m15: null,
+            m60: null,
+          },
+        },
+        reasons: [],
+      })
+  );
+}
+
+async function verifyFuturesRiskGate() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+
+  let savedRecord = null;
+
+  globalThis.fetch = async (
+    url,
+    options = {}
+  ) => {
+    assert.equal(
+      String(url),
+      "https://redis.test"
+    );
+
+    const command =
+      JSON.parse(options.body);
+
+    if (
+      command[0] ===
+      "ZRANGEBYSCORE"
+    ) {
+      return response({
+        result:
+          command[1] ===
+          "hl:rank:BTC"
+            ? decisionLogRows()
+            : [],
+      });
+    }
+
+    if (command[0] === "ZADD") {
+      savedRecord = JSON.parse(
+        command[3]
+      );
+      return response({ result: 1 });
+    }
+
+    assert.equal(
+      command[0],
+      "ZREMRANGEBYSCORE"
+    );
+    return response({ result: 0 });
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/decision-log.js",
+      "futures-risk-gate"
+    );
+
+  const blockedRes = makeRes();
+  await handler(
+    {
+      url: "/api/decision-log",
+    },
+    blockedRes
+  );
+
+  assert.equal(
+    blockedRes.statusCode,
+    200
+  );
+  assert.equal(
+    blockedRes.body.saved.tradeAllowed,
+    false
+  );
+  assert.equal(
+    blockedRes.body.saved.reason,
+    "futures_risk_gate_blocked"
+  );
+  assert.equal(
+    blockedRes.body.saved.plans.length,
+    1,
+    "signal plan should remain available for backward compatibility"
+  );
+
+  const blocked =
+    blockedRes.body.saved
+      .orderCandidates[0];
+  assert.equal(blocked.status, "BLOCK");
+  assert.equal(
+    blocked.positionBucket,
+    "futures:BTC"
+  );
+  assert.deepEqual(
+    Object.keys(blocked).filter(
+      (key) =>
+        [
+          "entry",
+          "stop",
+          "stopDistancePct",
+          "notionalUsd",
+          "marginUsd",
+          "leverage",
+          "maxLossUsd",
+          "timeStop",
+          "positionBucket",
+        ].includes(key)
+    ).sort(),
+    [
+      "entry",
+      "leverage",
+      "marginUsd",
+      "maxLossUsd",
+      "notionalUsd",
+      "positionBucket",
+      "stop",
+      "stopDistancePct",
+      "timeStop",
+    ]
+  );
+  for (const key of [
+    "entry",
+    "stop",
+    "stopDistancePct",
+    "notionalUsd",
+    "marginUsd",
+    "leverage",
+    "maxLossUsd",
+  ]) {
+    assert.equal(
+      Number.isFinite(blocked[key]),
+      true,
+      `${key} must be a finite number`
+    );
+  }
+  assert.equal(
+    typeof blocked.timeStop,
+    "string"
+  );
+  assert.ok(
+    blocked.blockReasons.includes(
+      "account_balance_unknown"
+    )
+  );
+  assert.ok(
+    blocked.blockReasons.includes(
+      "current_price_unconfirmed"
+    )
+  );
+  assert.ok(
+    blocked.blockReasons.includes(
+      "daily_loss_unknown"
+    )
+  );
+  assert.ok(
+    blocked.blockReasons.includes(
+      "open_futures_positions_unknown"
+    )
+  );
+  assert.ok(
+    blocked.blockReasons.includes(
+      "recent_futures_exits_unknown"
+    )
+  );
+  assert.equal(
+    savedRecord.tradeAllowed,
+    false
+  );
+
+  const safeRes = makeRes();
+  await handler(
+    {
+      url: "/api/decision-log",
+      body: {
+        riskContext: {
+          accountBalanceUsd: 50000,
+          dailyLossUsd: 0,
+          currentPrices: {
+            BTC: {
+              price: 100,
+              asOf: Date.now(),
+            },
+          },
+          openFuturesPositions: [],
+          recentFuturesExits: [],
+        },
+      },
+    },
+    safeRes
+  );
+
+  assert.equal(
+    safeRes.body.saved.tradeAllowed,
+    true
+  );
+  assert.equal(
+    safeRes.body.saved
+      .orderCandidates[0].status,
+    "ELIGIBLE"
+  );
+
+  const losingAddRes = makeRes();
+  await handler(
+    {
+      url: "/api/decision-log",
+      body: {
+        riskContext: {
+          accountBalanceUsd: 50000,
+          dailyLossUsd: 0,
+          currentPrices: {
+            BTC: {
+              price: 100,
+              asOf: Date.now(),
+            },
+          },
+          openFuturesPositions: [
+            {
+              coin: "BTC",
+              side: "LONG",
+              marginUsd: 4800,
+              unrealizedPnlUsd: -10,
+              positionBucket:
+                "futures:BTC",
+            },
+          ],
+          recentFuturesExits: [],
+        },
+      },
+    },
+    losingAddRes
+  );
+
+  const losingAdd =
+    losingAddRes.body.saved
+      .orderCandidates[0];
+  assert.equal(losingAdd.status, "BLOCK");
+  assert.ok(
+    losingAdd.blockReasons.includes(
+      "adding_to_losing_position"
+    )
+  );
+  assert.ok(
+    losingAdd.blockReasons.includes(
+      "coin_margin_limit_exceeded"
+    )
+  );
+
+  const reversalRes = makeRes();
+  await handler(
+    {
+      url: "/api/decision-log",
+      body: {
+        riskContext: {
+          accountBalanceUsd: 1000,
+          dailyLossUsd: 40,
+          currentPrices: {
+            BTC: {
+              price: 100,
+              asOf: Date.now(),
+            },
+          },
+          openFuturesPositions: [],
+          recentFuturesExits: [
+            {
+              coin: "BTC",
+              side: "SHORT",
+              exitedAt:
+                Date.now() -
+                30 * 60 * 1000,
+              sameFourHourCandle: true,
+              nextFourHourCloseConfirmed:
+                false,
+              newRationaleConfirmed:
+                false,
+              positionBucket:
+                "futures:BTC",
+            },
+          ],
+        },
+      },
+    },
+    reversalRes
+  );
+
+  const reversal =
+    reversalRes.body.saved
+      .orderCandidates[0];
+  assert.equal(reversal.status, "BLOCK");
+
+  for (const reason of [
+    "max_loss_exceeds_account_2pct",
+    "daily_loss_limit_reached",
+    "same_4h_candle_reversal",
+    "reversal_flat_hour_incomplete",
+    "reversal_4h_close_unconfirmed",
+    "reversal_rationale_unconfirmed",
+  ]) {
+    assert.ok(
+      reversal.blockReasons.includes(
+        reason
+      ),
+      `missing risk gate reason ${reason}`
+    );
+  }
+}
+
 async function verifyQuoteUpstreamTimeout() {
   process.env.QUOTE_API_TIMEOUT_MS = "25";
 
@@ -2152,6 +2492,7 @@ test(
       await verifyHistoryRedisTimeout();
       await verifyHistoryDexMarketKey();
       await verifyDecisionLogRedisTimeout();
+      await verifyFuturesRiskGate();
       await verifyQuoteUpstreamTimeout();
       await verifyQuoteRateLimitRecovery();
       await verifyRankPersistenceSingleBatch();
