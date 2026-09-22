@@ -22,10 +22,29 @@ const MAX_LEVERAGE = 10;
 const MAX_PORTFOLIO_STOP_RISK_USD =
   MAX_TOTAL_MARGIN * 0.01;
 const MAX_POSITIONS = 3;
+const MAX_THEME_RISK_FRACTION = 0.02;
+const MAX_DAILY_LOSS_USD = 2000;
+const MAX_DAILY_LOSS_FRACTION = 0.04;
+const REVERSAL_COOLDOWN_MS = 60 * 60 * 1000;
+const MAX_PRICE_CONFIRMATION_AGE_MS =
+  5 * 60 * 1000;
+const TIME_STOP =
+  "cancel_unfilled_at_next_4h_close; exit_if_thesis_invalid_at_4h_close";
 
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
+}
+
+function suppliedNumber(v) {
+  if (
+    v == null ||
+    v === ""
+  ) {
+    return null;
+  }
+
+  return n(v);
 }
 
 function clamp(v, min, max) {
@@ -1057,9 +1076,360 @@ function finalizePlan(
   };
 }
 
+function riskContextFrom(req) {
+  const value =
+    req?.body?.riskContext;
+
+  return value &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+    ? value
+    : null;
+}
+
+function matchingRows(
+  rows,
+  coin
+) {
+  if (!Array.isArray(rows)) {
+    return null;
+  }
+
+  return rows.filter(
+    (row) =>
+      row &&
+      row.coin === coin &&
+      (
+        row.positionBucket == null ||
+        row.positionBucket ===
+          `futures:${coin}`
+      )
+  );
+}
+
+function buildOrderCandidate(
+  plan,
+  riskContext,
+  now
+) {
+  const blockReasons = [];
+  const accountBalanceUsd =
+    suppliedNumber(
+      riskContext
+        ?.accountBalanceUsd
+    );
+  const dailyLossUsd =
+    suppliedNumber(
+      riskContext
+        ?.dailyLossUsd
+    );
+  const currentPrice =
+    riskContext
+      ?.currentPrices
+      ?.[plan.coin];
+  const confirmedPrice =
+    suppliedNumber(
+      currentPrice?.price
+    );
+  const confirmedPriceAt =
+    suppliedNumber(
+      currentPrice?.asOf
+    );
+  const openPositions =
+    matchingRows(
+      riskContext
+        ?.openFuturesPositions,
+      plan.coin
+    );
+  const recentExits =
+    matchingRows(
+      riskContext
+        ?.recentFuturesExits,
+      plan.coin
+    );
+  const stop =
+    n(plan?.risk?.stop);
+  const stopDistancePct =
+    n(plan?.risk?.stopPct);
+  const maxLossUsd =
+    n(
+      plan
+        ?.risk
+        ?.allocatedRiskUsd
+    );
+  const marginUsd =
+    n(plan?.margin);
+
+  if (
+    accountBalanceUsd == null ||
+    accountBalanceUsd <= 0
+  ) {
+    blockReasons.push(
+      "account_balance_unknown"
+    );
+  }
+
+  if (
+    confirmedPrice == null ||
+    confirmedPrice <= 0 ||
+    confirmedPriceAt == null
+  ) {
+    blockReasons.push(
+      "current_price_unconfirmed"
+    );
+  } else if (
+    confirmedPriceAt > now ||
+    now - confirmedPriceAt >
+      MAX_PRICE_CONFIRMATION_AGE_MS
+  ) {
+    blockReasons.push(
+      "current_price_stale"
+    );
+  }
+
+  if (
+    stop == null ||
+    stop <= 0 ||
+    stopDistancePct == null ||
+    stopDistancePct <= 0
+  ) {
+    blockReasons.push(
+      "stop_missing"
+    );
+  }
+
+  if (
+    accountBalanceUsd != null &&
+    accountBalanceUsd > 0 &&
+    maxLossUsd != null
+  ) {
+    if (
+      maxLossUsd >
+        accountBalanceUsd *
+          MAX_THEME_RISK_FRACTION
+    ) {
+      blockReasons.push(
+        "max_loss_exceeds_account_2pct"
+      );
+    }
+  } else if (maxLossUsd == null) {
+    blockReasons.push(
+      "max_loss_unknown"
+    );
+  }
+
+  if (
+    dailyLossUsd == null ||
+    dailyLossUsd < 0
+  ) {
+    blockReasons.push(
+      "daily_loss_unknown"
+    );
+  } else if (
+    accountBalanceUsd != null &&
+    accountBalanceUsd > 0 &&
+    dailyLossUsd >=
+      Math.min(
+        MAX_DAILY_LOSS_USD,
+        accountBalanceUsd *
+          MAX_DAILY_LOSS_FRACTION
+      )
+  ) {
+    blockReasons.push(
+      "daily_loss_limit_reached"
+    );
+  }
+
+  if (openPositions == null) {
+    blockReasons.push(
+      "open_futures_positions_unknown"
+    );
+  } else {
+    let existingMargin = 0;
+
+    for (const position of openPositions) {
+      const positionMargin =
+        suppliedNumber(
+          position.marginUsd
+        );
+
+      if (
+        positionMargin == null ||
+        positionMargin < 0
+      ) {
+        blockReasons.push(
+          "open_position_margin_unknown"
+        );
+      } else {
+        existingMargin +=
+          positionMargin;
+      }
+    }
+
+    if (marginUsd == null) {
+      blockReasons.push(
+        "candidate_margin_unknown"
+      );
+    }
+
+    if (
+      marginUsd != null &&
+      existingMargin + marginUsd >
+        MAX_TOTAL_MARGIN
+    ) {
+      blockReasons.push(
+        "coin_margin_limit_exceeded"
+      );
+    }
+
+    for (const position of openPositions) {
+      if (
+        position.side !== "LONG" &&
+        position.side !== "SHORT"
+      ) {
+        blockReasons.push(
+          "open_position_side_unknown"
+        );
+        continue;
+      }
+
+      if (
+        position.side !== plan.side
+      ) {
+        blockReasons.push(
+          "opposite_position_open"
+        );
+        continue;
+      }
+
+      const unrealizedPnlUsd =
+        suppliedNumber(
+          position
+            .unrealizedPnlUsd
+        );
+
+      if (
+        unrealizedPnlUsd == null
+      ) {
+        blockReasons.push(
+          "open_position_pnl_unknown"
+        );
+      } else if (
+        unrealizedPnlUsd < 0
+      ) {
+        blockReasons.push(
+          "adding_to_losing_position"
+        );
+      }
+    }
+  }
+
+  if (recentExits == null) {
+    blockReasons.push(
+      "recent_futures_exits_unknown"
+    );
+  } else {
+    for (const exit of recentExits) {
+      if (
+        exit.side !== "LONG" &&
+        exit.side !== "SHORT"
+      ) {
+        blockReasons.push(
+          "recent_exit_side_unknown"
+        );
+        continue;
+      }
+
+      if (exit.side === plan.side) {
+        continue;
+      }
+
+      const exitedAt =
+        suppliedNumber(
+          exit.exitedAt
+        );
+
+      if (
+        exit.sameFourHourCandle ===
+        true
+      ) {
+        blockReasons.push(
+          "same_4h_candle_reversal"
+        );
+      }
+
+      if (
+        exitedAt == null ||
+        exitedAt > now
+      ) {
+        blockReasons.push(
+          "recent_exit_time_unknown"
+        );
+      } else if (
+        now - exitedAt <
+        REVERSAL_COOLDOWN_MS
+      ) {
+        blockReasons.push(
+          "reversal_flat_hour_incomplete"
+        );
+      }
+
+      if (
+        exit.nextFourHourCloseConfirmed !==
+        true
+      ) {
+        blockReasons.push(
+          "reversal_4h_close_unconfirmed"
+        );
+      }
+
+      if (
+        exit.newRationaleConfirmed !==
+        true
+      ) {
+        blockReasons.push(
+          "reversal_rationale_unconfirmed"
+        );
+      }
+    }
+  }
+
+  const uniqueReasons =
+    [...new Set(blockReasons)];
+
+  return {
+    coin:
+      plan.coin,
+    side:
+      plan.side,
+    entry:
+      plan.entry.ideal,
+    stop,
+    stopDistancePct,
+    notionalUsd:
+      plan.positionNotional,
+    marginUsd:
+      plan.margin,
+    leverage:
+      plan.leverage,
+    maxLossUsd,
+    timeStop:
+      TIME_STOP,
+    positionBucket:
+      `futures:${plan.coin}`,
+    status:
+      uniqueReasons.length
+        ? "BLOCK"
+        : "ELIGIBLE",
+    blockReasons:
+      uniqueReasons,
+  };
+}
+
 function buildDecision(
   actionable,
-  persistence
+  persistence,
+  riskContext
 ) {
   if (!actionable.length) {
     return {
@@ -1117,6 +1487,9 @@ function buildDecision(
       plans:
         [],
 
+      orderCandidates:
+        [],
+
       constraints: {
         maxTotalMargin:
           MAX_TOTAL_MARGIN,
@@ -1129,6 +1502,21 @@ function buildDecision(
 
         maxPositions:
           MAX_POSITIONS,
+
+        maxThemeRiskFraction:
+          MAX_THEME_RISK_FRACTION,
+
+        maxDailyLossUsd:
+          MAX_DAILY_LOSS_USD,
+
+        maxDailyLossFraction:
+          MAX_DAILY_LOSS_FRACTION,
+
+        reversalCooldownMs:
+          REVERSAL_COOLDOWN_MS,
+
+        maxPriceConfirmationAgeMs:
+          MAX_PRICE_CONFIRMATION_AGE_MS,
       },
 
       system: {
@@ -1179,6 +1567,24 @@ function buildDecision(
         )
     );
 
+  const orderCandidates =
+    plans.map(
+      (plan) =>
+        buildOrderCandidate(
+          plan,
+          riskContext,
+          Date.now()
+        )
+    );
+
+  const tradeAllowed =
+    orderCandidates.length > 0 &&
+    orderCandidates.every(
+      (candidate) =>
+        candidate.status ===
+        "ELIGIBLE"
+    );
+
   const first =
     plans[0] ?? null;
 
@@ -1208,10 +1614,12 @@ function buildDecision(
         : `${plans.length} TRADES`,
 
     tradeAllowed:
-      true,
+      tradeAllowed,
 
     reason:
-      null,
+      tradeAllowed
+        ? null
+        : "futures_risk_gate_blocked",
 
     coin:
       first?.coin ?? null,
@@ -1269,6 +1677,8 @@ function buildDecision(
 
     plans,
 
+    orderCandidates,
+
     constraints: {
       maxTotalMargin:
         MAX_TOTAL_MARGIN,
@@ -1281,6 +1691,21 @@ function buildDecision(
 
       maxPositions:
         MAX_POSITIONS,
+
+      maxThemeRiskFraction:
+        MAX_THEME_RISK_FRACTION,
+
+      maxDailyLossUsd:
+        MAX_DAILY_LOSS_USD,
+
+      maxDailyLossFraction:
+        MAX_DAILY_LOSS_FRACTION,
+
+      reversalCooldownMs:
+        REVERSAL_COOLDOWN_MS,
+
+      maxPriceConfirmationAgeMs:
+        MAX_PRICE_CONFIRMATION_AGE_MS,
 
       totalMargin,
 
@@ -1439,7 +1864,8 @@ export default async function handler(
     const record =
       buildDecision(
         actionable,
-        persistentSignals
+        persistentSignals,
+        riskContextFrom(req)
       );
 
     await saveDecision(
