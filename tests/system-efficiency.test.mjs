@@ -767,6 +767,75 @@ async function verifySnapshotRedisTimeout() {
   );
 }
 
+async function verifySnapshotRedisQuotaSkipsRetry() {
+  const token =
+    "qstash-redis-quota-token";
+  process.env.UPSTASH_QSTASH_TOKEN = token;
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+
+  let redisCalls = 0;
+
+  globalThis.fetch = async (url) => {
+    assert.equal(
+      String(url),
+      "https://redis.test"
+    );
+    redisCalls += 1;
+
+    return new Response(
+      JSON.stringify({
+        error:
+          "ERR max requests limit exceeded. Limit: 500000, Usage: 500000.",
+      }),
+      {
+        status: 400,
+        headers: {
+          "content-type":
+            "application/json",
+        },
+      }
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/snapshot.js",
+      "redis-quota"
+    );
+
+  const supplied = createHash("sha256")
+    .update(token)
+    .digest("hex");
+  const res = makeRes();
+
+  await handler(
+    {
+      query: {},
+      headers: {
+        "x-snapshot-key": supplied,
+      },
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, false);
+  assert.equal(res.body.skipped, true);
+  assert.equal(res.body.retryable, false);
+  assert.equal(
+    res.body.reason,
+    "redis_quota_exhausted"
+  );
+  assert.match(
+    res.body.error,
+    /max requests limit exceeded/
+  );
+  assert.equal(redisCalls, 1);
+}
+
 async function verifyPersistRedisTimeout() {
   process.env.STORAGE_REDIS_REST_URL =
     "https://redis.test";
@@ -2481,6 +2550,7 @@ test(
       await verifySnapshotRankTimeout();
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();
+      await verifySnapshotRedisQuotaSkipsRetry();
       await verifyPersistRedisTimeout();
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
