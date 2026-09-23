@@ -534,6 +534,15 @@ async function sha256(s) {
     .join("");
 }
 
+function isRedisQuotaExhausted(error) {
+  const message = String(error);
+
+  return (
+    /Redis 400:/i.test(message) &&
+    /max requests limit exceeded/i.test(message)
+  );
+}
+
 async function redis(cmd) {
   const { url, token } = redisConfig();
 
@@ -1079,6 +1088,30 @@ export default async function handler(req, res) {
       decisionLog,
     });
   } catch (e) {
+    if (isRedisQuotaExhausted(e)) {
+      const error = String(e);
+
+      console.warn(
+        JSON.stringify({
+          event:
+            "snapshot_skipped",
+          reason:
+            "redis_quota_exhausted",
+          retryable: false,
+          error,
+        })
+      );
+
+      return res.status(200).json({
+        ok: false,
+        skipped: true,
+        retryable: false,
+        reason:
+          "redis_quota_exhausted",
+        error,
+      });
+    }
+
     return res.status(500).json({
       ok: false,
       error: String(e),
