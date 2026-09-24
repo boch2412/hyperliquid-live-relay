@@ -6,6 +6,15 @@ const INTERNAL_API_TIMEOUT_MS = Math.max(
     process.env.INTEL_API_TIMEOUT_MS
   ) || 12_000
 );
+const HISTORY_QUOTA_COOLDOWN_MS = Math.max(
+  1,
+  Number(
+    process.env
+      .INTEL_HISTORY_QUOTA_COOLDOWN_MS
+  ) || 60_000
+);
+
+let historyQuotaBlockedUntil = 0;
 
 function normalizeCoin(v) {
   return String(v || "").trim();
@@ -205,6 +214,27 @@ async function getHistoryWithFallback(
   path,
   coin
 ) {
+  if (Date.now() < historyQuotaBlockedUntil) {
+    const message =
+      `Error: ${path} skipped during Redis quota cooldown: max requests limit exceeded`;
+
+    console.warn(
+      JSON.stringify({
+        level: "warning",
+        event: "intel_history_degraded",
+        route: "/api/intel",
+        coin,
+        quotaCircuitOpen: true,
+        error: message,
+      })
+    );
+
+    return {
+      data: null,
+      error: message,
+    };
+  }
+
   try {
     return {
       data: await getJSON(path),
@@ -217,12 +247,17 @@ async function getHistoryWithFallback(
 
     const message = String(error);
 
+    historyQuotaBlockedUntil =
+      Date.now() +
+      HISTORY_QUOTA_COOLDOWN_MS;
+
     console.warn(
       JSON.stringify({
         level: "warning",
         event: "intel_history_degraded",
         route: "/api/intel",
         coin,
+        quotaCircuitOpen: false,
         error: message,
       })
     );
