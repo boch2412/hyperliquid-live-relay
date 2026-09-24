@@ -1478,10 +1478,14 @@ async function verifyIntelFailureLogging() {
 }
 
 async function verifyIntelRedisQuotaFallback() {
+  let signalCalls = 0;
+  let historyCalls = 0;
+
   globalThis.fetch = async (url) => {
     const value = String(url);
 
     if (value.includes("/api/signal?coin=SUI")) {
+      signalCalls += 1;
       return response({
         ok: true,
         live: true,
@@ -1501,6 +1505,7 @@ async function verifyIntelRedisQuotaFallback() {
     }
 
     if (value.includes("/api/history?coin=SUI")) {
+      historyCalls += 1;
       return response(
         {
           ok: false,
@@ -1523,6 +1528,7 @@ async function verifyIntelRedisQuotaFallback() {
   const warnings = [];
   const previousConsoleWarn = console.warn;
   const res = makeRes();
+  const repeatedRes = makeRes();
 
   console.warn = (message) => {
     warnings.push(String(message));
@@ -1536,6 +1542,15 @@ async function verifyIntelRedisQuotaFallback() {
         },
       },
       res
+    );
+
+    await handler(
+      {
+        query: {
+          coin: "SUI",
+        },
+      },
+      repeatedRes
     );
   } finally {
     console.warn = previousConsoleWarn;
@@ -1553,7 +1568,18 @@ async function verifyIntelRedisQuotaFallback() {
     res.body.quality.historyError,
     /max requests limit exceeded/
   );
-  assert.equal(warnings.length, 1);
+  assert.equal(repeatedRes.statusCode, 200);
+  assert.equal(
+    repeatedRes.body.analysis.bias,
+    "WAIT"
+  );
+  assert.equal(
+    repeatedRes.body.quality.historyDegraded,
+    true
+  );
+  assert.equal(signalCalls, 2);
+  assert.equal(historyCalls, 1);
+  assert.equal(warnings.length, 2);
 
   const warning = JSON.parse(warnings[0]);
   assert.deepEqual(
@@ -1569,6 +1595,11 @@ async function verifyIntelRedisQuotaFallback() {
       route: "/api/intel",
       coin: "SUI",
     }
+  );
+  assert.equal(
+    JSON.parse(warnings[1])
+      .quotaCircuitOpen,
+    true
   );
 }
 
