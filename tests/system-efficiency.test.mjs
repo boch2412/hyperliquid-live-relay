@@ -222,6 +222,118 @@ async function verifyPersistenceRedisTimeout() {
   );
 }
 
+async function verifyPersistenceRedisQuotaFallback() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.PERSISTENCE_REDIS_QUOTA_COOLDOWN_MS =
+    "60000";
+
+  const coins = Array.from(
+    { length: 18 },
+    (_, index) => `C${index}`
+  );
+  let redisCalls = 0;
+
+  globalThis.fetch = async () => {
+    redisCalls += 1;
+    return response(
+      {
+        error:
+          "ERR max requests limit exceeded. Limit: 500000, Usage: 500000.",
+      },
+      400
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/persistence.js",
+      "redis-quota-fallback"
+    );
+
+  const firstRes = makeRes();
+  await handler(
+    {
+      query: {
+        mode: "watchrank",
+        coins: coins.join(","),
+      },
+    },
+    firstRes
+  );
+
+  assert.equal(firstRes.statusCode, 200);
+  assert.equal(firstRes.body.ok, true);
+  assert.equal(firstRes.body.degraded, true);
+  assert.equal(
+    firstRes.body.degradationReason,
+    "redis_quota_exhausted"
+  );
+  assert.equal(firstRes.body.historyReady, false);
+  assert.equal(firstRes.body.windowHours, 6);
+  assert.equal(firstRes.body.expectedSamples, 72);
+  assert.equal(firstRes.body.ranking.length, 18);
+  assert.ok(
+    firstRes.body.ranking.every(
+      (row) =>
+        row.score === 0.5 &&
+        row.samples === 0 &&
+        row.historyReady === false
+    )
+  );
+  assert.ok(
+    redisCalls <= 4,
+    `quota failure should stop after the ${4}-request concurrency window, got ${redisCalls}`
+  );
+
+  const callsAfterFirst = redisCalls;
+  const repeatedRes = makeRes();
+  await handler(
+    {
+      query: {
+        mode: "watchrank",
+        coins: coins.join(","),
+      },
+    },
+    repeatedRes
+  );
+
+  assert.equal(repeatedRes.statusCode, 200);
+  assert.equal(repeatedRes.body.degraded, true);
+  assert.equal(
+    redisCalls,
+    callsAfterFirst,
+    "quota circuit should suppress repeated Redis requests during cooldown"
+  );
+
+  const regularRes = makeRes();
+  await handler(
+    {
+      query: {},
+    },
+    regularRes
+  );
+
+  assert.equal(regularRes.statusCode, 200);
+  assert.equal(regularRes.body.persistenceReady, false);
+  assert.equal(regularRes.body.anyPersistentSignal, false);
+  assert.deepEqual(
+    regularRes.body.persistentSignals,
+    []
+  );
+  assert.equal(regularRes.body.results.length, 5);
+  assert.ok(
+    regularRes.body.results.every(
+      (row) =>
+        row.passed === false &&
+        row.sampleCount === 0
+    )
+  );
+  assert.equal(redisCalls, callsAfterFirst);
+}
+
 async function verifySnapshotCoverageAndConcurrency() {
   const token = "qstash-test-token";
   process.env.UPSTASH_QSTASH_TOKEN = token;
@@ -2576,6 +2688,7 @@ test(
       await verifyRuntimeCompatibilityPin();
       await verifyPersistenceBatch();
       await verifyPersistenceRedisTimeout();
+      await verifyPersistenceRedisQuotaFallback();
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotLockSkipsDownstreamWork();
       await verifySnapshotRankTimeout();
@@ -2617,6 +2730,7 @@ test(
       delete process.env.QUOTE_API_TIMEOUT_MS;
       delete process.env.QUOTE_RETRY_BASE_MS;
       delete process.env.PERSISTENCE_REDIS_TIMEOUT_MS;
+      delete process.env.PERSISTENCE_REDIS_QUOTA_COOLDOWN_MS;
     }
   }
 );
