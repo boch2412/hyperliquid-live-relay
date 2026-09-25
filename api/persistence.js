@@ -19,6 +19,31 @@ const REDIS_TIMEOUT_MS = Math.max(
   ) || 8_000
 );
 
+const REDIS_QUOTA_COOLDOWN_MS =
+  Math.max(
+    1,
+    Number(
+      process.env
+        .PERSISTENCE_REDIS_QUOTA_COOLDOWN_MS
+    ) || 60_000
+  );
+
+let redisQuotaBlockedUntil = 0;
+
+function isRedisQuotaExhausted(error) {
+  const message = String(error);
+
+  return (
+    /Redis 400:/i.test(message) &&
+    /max requests limit exceeded/i.test(message)
+  ) || (
+    /Redis request skipped during quota cooldown:/i.test(
+      message
+    ) &&
+    /max requests limit exceeded/i.test(message)
+  );
+}
+
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
@@ -75,6 +100,15 @@ function redisConfig() {
 }
 
 async function redis(cmd) {
+  if (
+    Date.now() <
+    redisQuotaBlockedUntil
+  ) {
+    throw new Error(
+      "Redis request skipped during quota cooldown: max requests limit exceeded"
+    );
+  }
+
   const {
     url,
     token,
@@ -135,10 +169,22 @@ async function redis(cmd) {
   }
 
   if (!r.ok) {
-    throw new Error(
+    const error = new Error(
       `Redis ${r.status}: ` +
       text.slice(0, 200)
     );
+
+    if (
+      isRedisQuotaExhausted(
+        error
+      )
+    ) {
+      redisQuotaBlockedUntil =
+        Date.now() +
+        REDIS_QUOTA_COOLDOWN_MS;
+    }
+
+    throw error;
   }
 
   try {
@@ -1001,17 +1047,12 @@ export default async function handler(
     "no-store"
   );
 
-  try {
-    const mode =
+  const mode =
   String(
     req.query.mode ||
       ""
   ).trim();
 
-if (
-  mode ===
-  "watchrank"
-) {
   const requestedCoin =
     String(
       req.query.coin ||
@@ -1030,6 +1071,12 @@ if (
       .filter(Boolean)
       .slice(0, 36);
 
+  try {
+
+if (
+  mode ===
+  "watchrank"
+) {
   const ranking =
     await getWatchRankResults(
       requestedCoins,
@@ -1072,10 +1119,7 @@ if (
     });
 }
     const requested =
-      String(
-        req.query.coin ||
-        ""
-      ).trim();
+      requestedCoin;
 
     const coins =
       requested
@@ -1143,6 +1187,95 @@ if (
         results,
       });
   } catch (e) {
+    if (
+      isRedisQuotaExhausted(e)
+    ) {
+      const degradedCoins =
+        mode === "watchrank"
+          ? (
+              requestedCoins.length
+                ? requestedCoins
+                : requestedCoin
+                  ? [requestedCoin]
+                  : COINS
+            )
+          : requestedCoin
+            ? [requestedCoin]
+            : COINS;
+
+      console.warn(
+        JSON.stringify({
+          event:
+            "persistence_degraded",
+          reason:
+            "redis_quota_exhausted",
+          mode:
+            mode || "persistence",
+          coinCount:
+            degradedCoins.length,
+          quotaCircuitOpen:
+            Date.now() <
+            redisQuotaBlockedUntil,
+          error:
+            String(e),
+        })
+      );
+
+      if (
+        mode === "watchrank"
+      ) {
+        return res
+          .status(200)
+          .json({
+            ok: true,
+            generatedAt:
+              Date.now(),
+            mode:
+              "watchrank",
+            windowHours: 6,
+            expectedSamples:
+              WATCHRANK_EXPECTED_SAMPLES,
+            historyReady: false,
+            degraded: true,
+            degradationReason:
+              "redis_quota_exhausted",
+            ranking:
+              degradedCoins.map(
+                (coin) =>
+                  evaluateWatchRank(
+                    coin,
+                    [],
+                    WATCHRANK_EXPECTED_SAMPLES
+                  )
+              ),
+          });
+      }
+
+      const results =
+        degradedCoins.map(
+          (coin) =>
+            evaluateCoin(
+              coin,
+              []
+            )
+        );
+
+      return res
+        .status(200)
+        .json({
+          ok: true,
+          generatedAt:
+            Date.now(),
+          persistenceReady: false,
+          anyPersistentSignal: false,
+          persistentSignals: [],
+          degraded: true,
+          degradationReason:
+            "redis_quota_exhausted",
+          results,
+        });
+    }
+
     return res
       .status(500)
       .json({
