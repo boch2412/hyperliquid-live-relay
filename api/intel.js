@@ -218,17 +218,6 @@ async function getHistoryWithFallback(
     const message =
       `Error: ${path} skipped during Redis quota cooldown: max requests limit exceeded`;
 
-    console.warn(
-      JSON.stringify({
-        level: "warning",
-        event: "intel_history_degraded",
-        route: "/api/intel",
-        coin,
-        quotaCircuitOpen: true,
-        error: message,
-      })
-    );
-
     return {
       data: null,
       error: message,
