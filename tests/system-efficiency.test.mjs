@@ -1691,7 +1691,11 @@ async function verifyIntelRedisQuotaFallback() {
   );
   assert.equal(signalCalls, 2);
   assert.equal(historyCalls, 1);
-  assert.equal(warnings.length, 2);
+  assert.equal(
+    warnings.length,
+    1,
+    "quota cooldown requests must not repeat the degradation warning"
+  );
 
   const warning = JSON.parse(warnings[0]);
   assert.deepEqual(
@@ -1709,9 +1713,8 @@ async function verifyIntelRedisQuotaFallback() {
     }
   );
   assert.equal(
-    JSON.parse(warnings[1])
-      .quotaCircuitOpen,
-    true
+    warning.quotaCircuitOpen,
+    false
   );
 }
 
