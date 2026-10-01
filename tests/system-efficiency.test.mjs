@@ -1032,6 +1032,73 @@ async function verifyPersistRedisTimeout() {
   );
 }
 
+async function verifyPersistRankTimeout() {
+  process.env.PERSIST_RANK_TIMEOUT_MS =
+    "25";
+
+  let rankAborted = false;
+
+  globalThis.fetch = async (
+    url,
+    options = {}
+  ) => {
+    assert.ok(
+      String(url).endsWith("/api/rank")
+    );
+
+    return new Promise((_, reject) => {
+      const abort = () => {
+        rankAborted = true;
+        reject(
+          options.signal?.reason ??
+            new DOMException(
+              "Aborted",
+              "AbortError"
+            )
+        );
+      };
+
+      if (options.signal?.aborted) {
+        abort();
+      } else {
+        options.signal?.addEventListener(
+          "abort",
+          abort,
+          { once: true }
+        );
+      }
+    });
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/persist.js",
+      "rank-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await handler(
+    {
+      query: {},
+      headers: {},
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /\/api\/rank timeout after 25ms/
+  );
+  assert.equal(rankAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "persist should not wait indefinitely for rank"
+  );
+}
+
 async function verifySignalRateLimitRecovery() {
   process.env.SIGNAL_RETRY_BASE_MS = "1";
 
@@ -2698,6 +2765,7 @@ test(
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();
       await verifySnapshotRedisQuotaSkipsRetry();
+      await verifyPersistRankTimeout();
       await verifyPersistRedisTimeout();
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
@@ -2723,6 +2791,7 @@ test(
       delete process.env.SNAPSHOT_RANK_TIMEOUT_MS;
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
       delete process.env.SNAPSHOT_REDIS_TIMEOUT_MS;
+      delete process.env.PERSIST_RANK_TIMEOUT_MS;
       delete process.env.PERSIST_REDIS_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;

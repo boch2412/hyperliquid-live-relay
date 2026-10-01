@@ -10,6 +10,13 @@ const REDIS_TIMEOUT_MS = Math.max(
       .PERSIST_REDIS_TIMEOUT_MS
   ) || 8_000
 );
+const RANK_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env
+      .PERSIST_RANK_TIMEOUT_MS
+  ) || 30_000
+);
 
 function envFirst(names) {
   for (const n of names) {
@@ -124,12 +131,33 @@ async function redis(cmd) {
 }
 
 async function getRank() {
-  const r = await fetch(
-    `${BASE}/api/rank`,
-    {
-      cache: "no-store",
-    }
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    RANK_TIMEOUT_MS
   );
+  let r;
+
+  try {
+    r = await fetch(
+      `${BASE}/api/rank`,
+      {
+        cache: "no-store",
+        signal: controller.signal,
+      }
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `/api/rank timeout after ${RANK_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text =
     await r.text();
