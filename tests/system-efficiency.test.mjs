@@ -551,6 +551,144 @@ async function verifySnapshotLockSkipsDownstreamWork() {
   assert.equal(downstreamCalls, 0);
 }
 
+async function verifySnapshotDownstreamTimeout() {
+  const token =
+    "qstash-downstream-timeout-token";
+  process.env.UPSTASH_QSTASH_TOKEN = token;
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.SNAPSHOT_DOWNSTREAM_TIMEOUT_MS =
+    "25";
+
+  let persistAborted = false;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+
+    if (value === "https://redis.test") {
+      const command = JSON.parse(options.body);
+
+      if (command[0] === "ZREVRANGE") {
+        return response({ result: [] });
+      }
+
+      return response({ result: "OK" });
+    }
+
+    if (
+      value.includes(
+        "/api/rank?mode=screener"
+      )
+    ) {
+      return response({
+        ok: true,
+        watchlist: [],
+        watchlistDetails: [],
+      });
+    }
+
+    if (value.includes("/api/quote?coin=")) {
+      return response({
+        ok: true,
+        live: true,
+        price: {
+          bid: 99,
+          ask: 101,
+          mid: 100,
+          mark: 100,
+          oracle: 100,
+        },
+        context: {
+          funding: 0,
+          openInterest: 1000,
+          dayNtlVlm: 1_000_000,
+        },
+        timing: {
+          freshnessMs: 0,
+        },
+      });
+    }
+
+    if (value.endsWith("/api/persist")) {
+      return new Promise((_, reject) => {
+        const abort = () => {
+          persistAborted = true;
+          reject(
+            options.signal?.reason ??
+              new DOMException(
+                "Aborted",
+                "AbortError"
+              )
+          );
+        };
+
+        if (options.signal?.aborted) {
+          abort();
+        } else {
+          options.signal?.addEventListener(
+            "abort",
+            abort,
+            { once: true }
+          );
+        }
+      });
+    }
+
+    if (value.endsWith("/api/decision-log")) {
+      return response({ ok: true });
+    }
+
+    throw new Error(`unexpected fetch ${value}`);
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/snapshot.js",
+      "downstream-timeout"
+    );
+  const supplied = createHash("sha256")
+    .update(token)
+    .digest("hex");
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        query: {},
+        headers: {
+          "x-snapshot-key": supplied,
+        },
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "snapshot downstream timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /\/api\/persist timeout after 25ms/
+  );
+  assert.equal(persistAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "snapshot should not wait indefinitely for downstream persistence"
+  );
+}
+
 async function verifySnapshotRankTimeout() {
   const token =
     "qstash-rank-timeout-token";
@@ -2761,6 +2899,7 @@ test(
       await verifyPersistenceRedisQuotaFallback();
       await verifySnapshotCoverageAndConcurrency();
       await verifySnapshotLockSkipsDownstreamWork();
+      await verifySnapshotDownstreamTimeout();
       await verifySnapshotRankTimeout();
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();
@@ -2791,6 +2930,7 @@ test(
       delete process.env.SNAPSHOT_RANK_TIMEOUT_MS;
       delete process.env.SNAPSHOT_QUOTE_TIMEOUT_MS;
       delete process.env.SNAPSHOT_REDIS_TIMEOUT_MS;
+      delete process.env.SNAPSHOT_DOWNSTREAM_TIMEOUT_MS;
       delete process.env.PERSIST_RANK_TIMEOUT_MS;
       delete process.env.PERSIST_REDIS_TIMEOUT_MS;
       delete process.env.SIGNAL_RETRY_BASE_MS;
