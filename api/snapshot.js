@@ -44,6 +44,18 @@ const SNAPSHOT_REDIS_TIMEOUT_MS =
   configuredRedisTimeoutMs > 0
     ? configuredRedisTimeoutMs
     : 8_000;
+const configuredDownstreamTimeoutMs =
+  Number(
+    process.env
+      .SNAPSHOT_DOWNSTREAM_TIMEOUT_MS
+  );
+const SNAPSHOT_DOWNSTREAM_TIMEOUT_MS =
+  Number.isFinite(
+    configuredDownstreamTimeoutMs
+  ) &&
+  configuredDownstreamTimeoutMs > 0
+    ? configuredDownstreamTimeoutMs
+    : 30_000;
 
 async function mapLimit(
   items,
@@ -975,10 +987,38 @@ async function setupSchedule() {
 return { ok: true, schedule };
 }
 
+async function fetchDownstream(path) {
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    SNAPSHOT_DOWNSTREAM_TIMEOUT_MS
+  );
+
+  try {
+    return await fetch(
+      `${BASE}${path}`,
+      {
+        cache: "no-store",
+        signal: controller.signal,
+      }
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `${path} timeout after ${SNAPSHOT_DOWNSTREAM_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function saveDecisionLog() {
-  const r = await fetch(
-    `${BASE}/api/decision-log`,
-    { cache: "no-store" }
+  const r = await fetchDownstream(
+    "/api/decision-log"
   );
 
   const text = await r.text();
@@ -1003,9 +1043,8 @@ async function saveDecisionLog() {
   
 
 async function saveRankPersistence() {
-  const r = await fetch(
-    `${BASE}/api/persist`,
-    { cache: "no-store" }
+  const r = await fetchDownstream(
+    "/api/persist"
   );
 
   const text = await r.text();
