@@ -14,6 +14,19 @@ const MAX_PORTFOLIO_STOP_RISK_USD =
 
 const MAX_POSITIONS = 3;
 
+const configuredInternalTimeoutMs =
+  Number(
+    process.env
+      .PLAN_INTERNAL_TIMEOUT_MS
+  );
+const INTERNAL_TIMEOUT_MS =
+  Number.isFinite(
+    configuredInternalTimeoutMs
+  ) &&
+  configuredInternalTimeoutMs > 0
+    ? configuredInternalTimeoutMs
+    : 30_000;
+
 function n(v) {
   const x = Number(v);
   return Number.isFinite(x) ? x : null;
@@ -27,12 +40,33 @@ function clamp(v, min, max) {
 }
 
 async function getJSON(path) {
-  const r = await fetch(
-    `${BASE}${path}`,
-    {
-      cache: "no-store",
-    }
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    INTERNAL_TIMEOUT_MS
   );
+  let r;
+
+  try {
+    r = await fetch(
+      `${BASE}${path}`,
+      {
+        cache: "no-store",
+        signal: controller.signal,
+      }
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `${path} timeout after ${INTERNAL_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text =
     await r.text();

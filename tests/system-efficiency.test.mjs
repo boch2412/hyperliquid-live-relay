@@ -2884,6 +2884,79 @@ async function verifyRankUpstreamTimeout() {
   );
 }
 
+async function verifyPlanInternalTimeout() {
+  process.env.PLAN_INTERNAL_TIMEOUT_MS =
+    "25";
+
+  let requestAborted = false;
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      const abort = () => {
+        requestAborted = true;
+        reject(
+          options.signal?.reason ??
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+        );
+      };
+
+      if (options.signal?.aborted) {
+        abort();
+      } else {
+        options.signal?.addEventListener(
+          "abort",
+          abort,
+          { once: true }
+        );
+      }
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/plan.js",
+      "internal-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        url: "/api/plan",
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "plan internal timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /\/api\/rank timeout after 25ms/
+  );
+  assert.equal(requestAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "plan should not wait indefinitely for a stalled internal API"
+  );
+}
+
 test(
   "daytrade efficiency invariants",
   async () => {
@@ -2921,6 +2994,7 @@ test(
       await verifyQuoteRateLimitRecovery();
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
+      await verifyPlanInternalTimeout();
     } finally {
       globalThis.fetch = previousFetch;
       Math.random = previousRandom;
@@ -2936,6 +3010,7 @@ test(
       delete process.env.SIGNAL_RETRY_BASE_MS;
       delete process.env.SIGNAL_API_TIMEOUT_MS;
       delete process.env.RANK_API_TIMEOUT_MS;
+      delete process.env.PLAN_INTERNAL_TIMEOUT_MS;
       delete process.env.INTEL_API_TIMEOUT_MS;
       delete process.env.HISTORY_REDIS_TIMEOUT_MS;
       delete process.env.DECISION_LOG_REDIS_TIMEOUT_MS;
