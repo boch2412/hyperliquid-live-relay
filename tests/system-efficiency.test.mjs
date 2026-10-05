@@ -2957,6 +2957,59 @@ async function verifyPlanInternalTimeout() {
   );
 }
 
+async function verifyDecisionAvoidsPlanSelfCall() {
+  const requests = [];
+
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    requests.push(value);
+
+    if (
+      value ===
+      "https://hyperliquid-live-relay.vercel.app/api/rank"
+    ) {
+      return response({
+        ok: true,
+        tradeAllowed: false,
+        generatedAt: 123,
+        ranking: [],
+        persistence: {
+          persistenceReady: false,
+          persistentSignals: [],
+        },
+      });
+    }
+
+    throw new Error(
+      `unexpected fetch ${value}`
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/decision.js",
+      "in-process-plan"
+    );
+  const res = makeRes();
+
+  await handler(
+    {
+      url: "/api/decision",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(
+    res.body.tradeAllowed,
+    false
+  );
+  assert.deepEqual(requests, [
+    "https://hyperliquid-live-relay.vercel.app/api/rank",
+  ]);
+}
+
 test(
   "daytrade efficiency invariants",
   async () => {
@@ -2995,6 +3048,7 @@ test(
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
       await verifyPlanInternalTimeout();
+      await verifyDecisionAvoidsPlanSelfCall();
     } finally {
       globalThis.fetch = previousFetch;
       Math.random = previousRandom;
