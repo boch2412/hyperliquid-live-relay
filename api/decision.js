@@ -1,25 +1,43 @@
-const BASE =
-  "https://hyperliquid-live-relay.vercel.app";
+import planHandler from "./plan.js";
 
-async function getJSON(path) {
-  const r = await fetch(
-    `${BASE}${path}`,
+async function getPlan() {
+  let statusCode = 200;
+  let body = null;
+
+  const response = {
+    setHeader() {},
+
+    status(code) {
+      statusCode = code;
+      return response;
+    },
+
+    json(value) {
+      body = value;
+      return response;
+    },
+  };
+
+  await planHandler(
     {
-      cache: "no-store",
-    }
+      url: "/api/plan",
+      query: {},
+    },
+    response
   );
 
-  const text =
-    await r.text();
-
-  if (!r.ok) {
+  if (
+    statusCode < 200 ||
+    statusCode >= 300
+  ) {
     throw new Error(
-      `${path} ${r.status}: ` +
-      text.slice(0, 200)
+      `/api/plan ${statusCode}: ` +
+      JSON.stringify(body)
+        .slice(0, 200)
     );
   }
 
-  return JSON.parse(text);
+  return body;
 }
 
 function round(v, digits = 2) {
@@ -213,9 +231,7 @@ export default async function handler(
       時刻ズレを防ぐ。
     */
     const plan =
-      await getJSON(
-        "/api/plan"
-      );
+      await getPlan();
 
     const rank =
       plan?.rankSnapshot ??
