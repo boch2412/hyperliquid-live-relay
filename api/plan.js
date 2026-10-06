@@ -81,13 +81,6 @@ async function getJSON(path) {
   return JSON.parse(text);
 }
 
-async function getIntel(coin) {
-  return getJSON(
-    `/api/intel?coin=` +
-      encodeURIComponent(coin)
-  );
-}
-
 function rangePct(window) {
   const high =
     n(window?.high);
@@ -939,10 +932,11 @@ export default async function handler(
       const ranked =
         actionable[i];
 
-      const intel =
-        await getIntel(
-          ranked.coin
-        );
+      const intel = {
+        live:
+          ranked
+            .marketSnapshot,
+      };
 
       /*
         銘柄ごとの許容損失額。
