@@ -2957,6 +2957,89 @@ async function verifyPlanInternalTimeout() {
   );
 }
 
+async function verifyPlanReusesRankSnapshot() {
+  const requests = [];
+  const momentumWindow = {
+    high: 101,
+    low: 99,
+    close: 100,
+  };
+
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    requests.push(value);
+
+    if (
+      value ===
+      "https://hyperliquid-live-relay.vercel.app/api/rank"
+    ) {
+      return response({
+        ok: true,
+        tradeAllowed: true,
+        ranking: [
+          {
+            coin: "BTC",
+            bias: "LONG",
+            confidence: 80,
+            compositeScore: 1,
+            opportunity: 0.8,
+            executionQuality: {
+              score: 0.9,
+            },
+            volatility: {
+              baselinePct: 0.3,
+              observedPct: 0.25,
+            },
+            marketSnapshot: {
+              price: {
+                bid: 99.9,
+                ask: 100.1,
+                mid: 100,
+                spreadBps: 20,
+              },
+              momentum: {
+                m5: momentumWindow,
+                m15: momentumWindow,
+                m60: momentumWindow,
+              },
+            },
+            reasons: [],
+          },
+        ],
+      });
+    }
+
+    throw new Error(
+      `unexpected fetch ${value}`
+    );
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/plan.js",
+      "reuse-rank-snapshot"
+    );
+  const res = makeRes();
+
+  await handler(
+    {
+      url: "/api/plan",
+    },
+    res
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.tradeAllowed, true);
+  assert.equal(res.body.plans.length, 1);
+  assert.equal(
+    res.body.plans[0].market.mid,
+    100
+  );
+  assert.deepEqual(requests, [
+    "https://hyperliquid-live-relay.vercel.app/api/rank",
+  ]);
+}
+
 async function verifyDecisionAvoidsPlanSelfCall() {
   const requests = [];
 
@@ -3048,6 +3131,7 @@ test(
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
       await verifyPlanInternalTimeout();
+      await verifyPlanReusesRankSnapshot();
       await verifyDecisionAvoidsPlanSelfCall();
     } finally {
       globalThis.fetch = previousFetch;
