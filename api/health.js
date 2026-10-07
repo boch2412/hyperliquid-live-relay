@@ -1,13 +1,40 @@
 const HL_INFO = "https://api.hyperliquid.xyz/info";
+const API_TIMEOUT_MS = Math.max(
+  1,
+  Number(
+    process.env.HEALTH_API_TIMEOUT_MS
+  ) || 8_000
+);
 
 async function postInfo(payload) {
   const t0 = Date.now();
-  const r = await fetch(HL_INFO, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+  const controller =
+    new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    API_TIMEOUT_MS
+  );
+  let r;
+
+  try {
+    r = await fetch(HL_INFO, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `health API timeout after ${API_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const text = await r.text();
   let data = null;
