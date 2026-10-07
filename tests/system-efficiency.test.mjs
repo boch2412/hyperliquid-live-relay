@@ -2516,6 +2516,78 @@ async function verifyQuoteUpstreamTimeout() {
   );
 }
 
+async function verifyHealthUpstreamTimeout() {
+  process.env.HEALTH_API_TIMEOUT_MS = "25";
+
+  let requestAborted = false;
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) =>
+    new Promise((_, reject) => {
+      const abort = () => {
+        requestAborted = true;
+        reject(
+          options.signal?.reason ??
+            new DOMException(
+              "aborted",
+              "AbortError"
+            )
+        );
+      };
+
+      if (options.signal?.aborted) {
+        abort();
+      } else {
+        options.signal?.addEventListener(
+          "abort",
+          abort,
+          { once: true }
+        );
+      }
+    });
+
+  const { default: handler } =
+    await freshImport(
+      "api/health.js",
+      "upstream-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        url: "/api/health",
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "health upstream timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /health API timeout after 25ms/
+  );
+  assert.equal(requestAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "health should not wait indefinitely for a stalled upstream"
+  );
+}
+
 async function verifyQuoteRateLimitRecovery() {
   process.env.QUOTE_RETRY_BASE_MS = "1";
 
@@ -3127,6 +3199,7 @@ test(
       await verifyDecisionLogRedisTimeout();
       await verifyFuturesRiskGate();
       await verifyQuoteUpstreamTimeout();
+      await verifyHealthUpstreamTimeout();
       await verifyQuoteRateLimitRecovery();
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
@@ -3154,6 +3227,7 @@ test(
       delete process.env.DECISION_LOG_REDIS_TIMEOUT_MS;
       delete process.env.QUOTE_API_TIMEOUT_MS;
       delete process.env.QUOTE_RETRY_BASE_MS;
+      delete process.env.HEALTH_API_TIMEOUT_MS;
       delete process.env.PERSISTENCE_REDIS_TIMEOUT_MS;
       delete process.env.PERSISTENCE_REDIS_QUOTA_COOLDOWN_MS;
     }
