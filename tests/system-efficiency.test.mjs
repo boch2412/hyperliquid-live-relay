@@ -1017,6 +1017,102 @@ async function verifySnapshotRedisTimeout() {
   );
 }
 
+async function verifySnapshotRedisBodyTimeout() {
+  const token =
+    "qstash-redis-body-timeout-token";
+  process.env.UPSTASH_QSTASH_TOKEN = token;
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.SNAPSHOT_REDIS_TIMEOUT_MS =
+    "25";
+
+  let bodyReadAborted = false;
+
+  globalThis.fetch = async (url, options = {}) => {
+    assert.equal(
+      String(url),
+      "https://redis.test"
+    );
+
+    return {
+      ok: true,
+      status: 200,
+      text: () =>
+        new Promise((_, reject) => {
+          const abort = () => {
+            bodyReadAborted = true;
+            reject(
+              options.signal.reason ??
+                new DOMException(
+                  "Aborted",
+                  "AbortError"
+                )
+            );
+          };
+
+          if (options.signal.aborted) {
+            abort();
+          } else {
+            options.signal.addEventListener(
+              "abort",
+              abort,
+              { once: true }
+            );
+          }
+        }),
+    };
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/snapshot.js",
+      "redis-body-timeout"
+    );
+
+  const supplied = createHash("sha256")
+    .update(token)
+    .digest("hex");
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        query: {},
+        headers: {
+          "x-snapshot-key": supplied,
+        },
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "snapshot Redis body timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /Redis timeout after 25ms/
+  );
+  assert.equal(bodyReadAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "snapshot Redis body read should not wait indefinitely"
+  );
+}
+
 async function verifySnapshotRedisQuotaSkipsRetry() {
   const token =
     "qstash-redis-quota-token";
@@ -3184,6 +3280,7 @@ test(
       await verifySnapshotRankTimeout();
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();
+      await verifySnapshotRedisBodyTimeout();
       await verifySnapshotRedisQuotaSkipsRetry();
       await verifyPersistRankTimeout();
       await verifyPersistRedisTimeout();
