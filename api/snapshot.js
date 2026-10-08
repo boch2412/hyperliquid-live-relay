@@ -574,6 +574,7 @@ async function redis(cmd) {
     SNAPSHOT_REDIS_TIMEOUT_MS
   );
   let r;
+  let text;
 
   try {
     r = await fetch(url, {
@@ -586,11 +587,18 @@ async function redis(cmd) {
       cache: "no-store",
       signal: controller.signal,
     });
+    text = await r.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Redis timeout after ${SNAPSHOT_REDIS_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
-
-  const text = await r.text();
 
   if (!r.ok) {
     throw new Error(`Redis ${r.status}: ${text.slice(0, 200)}`);
