@@ -1266,6 +1266,113 @@ async function verifyPersistRedisTimeout() {
   );
 }
 
+async function verifyPersistRedisBodyTimeout() {
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.PERSIST_REDIS_TIMEOUT_MS =
+    "25";
+
+  let bodyReadAborted = false;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+
+    if (
+      value.endsWith("/api/rank")
+    ) {
+      return response({
+        ok: true,
+        ranking: [
+          {
+            coin: "SUI",
+            bias: "LONG",
+            compositeScore: 0.8,
+            confidence: 80,
+            opportunity: 0.7,
+            threshold: 0.68,
+          },
+        ],
+      });
+    }
+
+    assert.equal(
+      value,
+      "https://redis.test"
+    );
+
+    return {
+      ok: true,
+      status: 200,
+      text: () =>
+        new Promise((_, reject) => {
+          const abort = () => {
+            bodyReadAborted = true;
+            reject(
+              options.signal.reason ??
+                new DOMException(
+                  "Aborted",
+                  "AbortError"
+                )
+            );
+          };
+
+          if (options.signal.aborted) {
+            abort();
+          } else {
+            options.signal.addEventListener(
+              "abort",
+              abort,
+              { once: true }
+            );
+          }
+        }),
+    };
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/persist.js",
+      "redis-body-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        query: {},
+        headers: {},
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "persist Redis body timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /Redis timeout after 25ms/
+  );
+  assert.equal(bodyReadAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "persist Redis body read should not wait indefinitely"
+  );
+}
+
 async function verifyPersistRankTimeout() {
   process.env.PERSIST_RANK_TIMEOUT_MS =
     "25";
@@ -3284,6 +3391,7 @@ test(
       await verifySnapshotRedisQuotaSkipsRetry();
       await verifyPersistRankTimeout();
       await verifyPersistRedisTimeout();
+      await verifyPersistRedisBodyTimeout();
       await verifySignalRateLimitRecovery();
       await verifySignalSingleCandleSnapshot();
       await verifySignalMarketMetadataCache();
