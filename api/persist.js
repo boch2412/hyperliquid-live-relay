@@ -87,6 +87,7 @@ async function redis(cmd) {
     REDIS_TIMEOUT_MS
   );
   let r;
+  let text;
 
   try {
     r = await fetch(url, {
@@ -109,12 +110,18 @@ async function redis(cmd) {
       signal:
         controller.signal,
     });
+    text = await r.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        `Redis timeout after ${REDIS_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
-
-  const text =
-    await r.text();
 
   if (!r.ok) {
     throw new Error(
@@ -282,3 +289,4 @@ marketSnapshot:
       });
   }
 }
+
