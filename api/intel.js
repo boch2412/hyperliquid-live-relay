@@ -169,12 +169,14 @@ async function getJSON(path) {
   );
 
   let r;
+  let text;
 
   try {
     r = await fetch(`${BASE}${path}`, {
       cache: "no-store",
       signal: controller.signal,
     });
+    text = await r.text();
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
@@ -186,8 +188,6 @@ async function getJSON(path) {
   } finally {
     clearTimeout(timeout);
   }
-
-  const text = await r.text();
 
   let data = null;
 
@@ -381,3 +381,4 @@ export default async function handler(req, res) {
     });
   }
 }
+
