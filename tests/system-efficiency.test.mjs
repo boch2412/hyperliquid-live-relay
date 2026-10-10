@@ -2184,6 +2184,93 @@ async function verifyIntelInternalTimeout() {
   );
 }
 
+async function verifyIntelInternalBodyTimeout() {
+  process.env.INTEL_API_TIMEOUT_MS = "25";
+
+  let bodyReadAborts = 0;
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) => ({
+    ok: true,
+    status: 200,
+    text: () =>
+      new Promise((_, reject) => {
+        const abort = () => {
+          bodyReadAborts += 1;
+          reject(
+            options.signal.reason ??
+              new DOMException(
+                "aborted",
+                "AbortError"
+              )
+          );
+        };
+
+        if (options.signal.aborted) {
+          abort();
+        } else {
+          options.signal.addEventListener(
+            "abort",
+            abort,
+            { once: true }
+          );
+        }
+      }),
+  });
+
+  const { default: handler } =
+    await freshImport(
+      "api/intel.js",
+      "internal-body-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+  const previousConsoleError =
+    console.error;
+
+  console.error = () => {};
+
+  try {
+    await Promise.race([
+      handler(
+        {
+          query: {
+            coin: "SUI",
+          },
+        },
+        res
+      ),
+      new Promise((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                "intel internal body timeout was not enforced"
+              )
+            ),
+          500
+        )
+      ),
+    ]);
+  } finally {
+    console.error = previousConsoleError;
+  }
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.ok, false);
+  assert.match(
+    res.body.error,
+    /timeout after 25ms/
+  );
+  assert.ok(bodyReadAborts >= 1);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "intel should not wait indefinitely for stalled internal response bodies"
+  );
+}
+
 async function verifyHistoryRedisTimeout() {
   process.env.STORAGE_REDIS_REST_URL =
     "https://redis.test";
@@ -3399,6 +3486,7 @@ test(
       await verifyIntelFailureLogging();
       await verifyIntelRedisQuotaFallback();
       await verifyIntelInternalTimeout();
+      await verifyIntelInternalBodyTimeout();
       await verifyHistoryRedisTimeout();
       await verifyHistoryDexMarketKey();
       await verifyDecisionLogRedisTimeout();
