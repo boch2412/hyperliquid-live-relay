@@ -811,6 +811,146 @@ async function verifySnapshotRankTimeout() {
   );
 }
 
+async function verifySnapshotRankBodyTimeout() {
+  const token =
+    "qstash-rank-body-timeout-token";
+  process.env.UPSTASH_QSTASH_TOKEN = token;
+  process.env.STORAGE_REDIS_REST_URL =
+    "https://redis.test";
+  process.env.STORAGE_REDIS_REST_TOKEN =
+    "test-token";
+  process.env.SNAPSHOT_RANK_TIMEOUT_MS =
+    "25";
+
+  let rankBodyAborted = false;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+
+    if (value === "https://redis.test") {
+      return response({ result: "OK" });
+    }
+
+    if (
+      value.includes(
+        "/api/rank?mode=screener"
+      )
+    ) {
+      return {
+        ok: true,
+        status: 200,
+        text: () =>
+          new Promise((_, reject) => {
+            const abort = () => {
+              rankBodyAborted = true;
+              reject(
+                options.signal.reason ??
+                  new DOMException(
+                    "Aborted",
+                    "AbortError"
+                  )
+              );
+            };
+
+            if (options.signal.aborted) {
+              abort();
+            } else {
+              options.signal.addEventListener(
+                "abort",
+                abort,
+                { once: true }
+              );
+            }
+          }),
+      };
+    }
+
+    if (value.includes("/api/quote?coin=")) {
+      return response({
+        ok: true,
+        live: true,
+        price: {
+          bid: 99,
+          ask: 101,
+          mid: 100,
+          mark: 100,
+          oracle: 100,
+        },
+        context: {
+          funding: 0,
+          openInterest: 1000,
+          dayNtlVlm: 1_000_000,
+        },
+        timing: {
+          freshnessMs: 0,
+        },
+      });
+    }
+
+    if (
+      value.endsWith("/api/persist") ||
+      value.endsWith("/api/decision-log")
+    ) {
+      return response({ ok: true });
+    }
+
+    throw new Error(`unexpected fetch ${value}`);
+  };
+
+  const { default: handler } =
+    await freshImport(
+      "api/snapshot.js",
+      "rank-body-timeout"
+    );
+  const supplied = createHash("sha256")
+    .update(token)
+    .digest("hex");
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        query: {},
+        headers: {
+          "x-snapshot-key": supplied,
+        },
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "snapshot rank body timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(rankBodyAborted, true);
+  assert.deepEqual(
+    res.body.watchlist,
+    [
+      "BTC",
+      "SUI",
+      "xyz:MU",
+      "xyz:SNDK",
+      "xyz:SKHX",
+    ]
+  );
+  assert.equal(res.body.savedCount, 5);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "snapshot should fall back when rank response bodies stall"
+  );
+}
+
 async function verifySnapshotQuoteTimeout() {
   const token = "qstash-timeout-token";
   process.env.UPSTASH_QSTASH_TOKEN = token;
@@ -3472,6 +3612,7 @@ test(
       await verifySnapshotLockSkipsDownstreamWork();
       await verifySnapshotDownstreamTimeout();
       await verifySnapshotRankTimeout();
+      await verifySnapshotRankBodyTimeout();
       await verifySnapshotQuoteTimeout();
       await verifySnapshotRedisTimeout();
       await verifySnapshotRedisBodyTimeout();
