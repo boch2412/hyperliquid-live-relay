@@ -111,6 +111,7 @@ async function getDynamicCoins() {
       SNAPSHOT_RANK_TIMEOUT_MS
     );
     let r;
+    let text;
 
     try {
       r = await fetch(
@@ -120,11 +121,10 @@ async function getDynamicCoins() {
           signal: controller.signal,
         }
       );
+      text = await r.text();
     } finally {
       clearTimeout(timeout);
     }
-
-    const text = await r.text();
 
     if (!r.ok) {
       throw new Error(
