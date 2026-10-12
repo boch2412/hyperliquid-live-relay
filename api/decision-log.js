@@ -17,7 +17,7 @@ const REDIS_TIMEOUT_MS = Math.max(
   ) || 8_000
 );
 
-const MAX_TOTAL_MARGIN = 5000;
+const MAX_TOTAL_MARGIN = 10_000;
 const MAX_LEVERAGE = 10;
 const MAX_PORTFOLIO_STOP_RISK_USD =
   MAX_TOTAL_MARGIN * 0.01;

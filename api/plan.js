@@ -1,7 +1,7 @@
 const BASE =
   "https://hyperliquid-live-relay.vercel.app";
 
-const MAX_TOTAL_MARGIN = 5000;
+const MAX_TOTAL_MARGIN = 10_000;
 const MAX_LEVERAGE = 10;
 
 /*
