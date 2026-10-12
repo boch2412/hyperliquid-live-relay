@@ -2792,6 +2792,12 @@ async function verifyFuturesRiskGate() {
       .orderCandidates[0].status,
     "ELIGIBLE"
   );
+  assert.equal(
+    safeRes.body.saved
+      .constraints.maxTotalMargin,
+    10_000,
+    "futures hard margin cap should match the current $10,000 policy"
+  );
 
   const losingAddRes = makeRes();
   await handler(
@@ -2811,7 +2817,7 @@ async function verifyFuturesRiskGate() {
             {
               coin: "BTC",
               side: "LONG",
-              marginUsd: 4800,
+              marginUsd: 9800,
               unrealizedPnlUsd: -10,
               positionBucket:
                 "futures:BTC",
@@ -3533,6 +3539,11 @@ async function verifyPlanReusesRankSnapshot() {
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.tradeAllowed, true);
   assert.equal(res.body.plans.length, 1);
+  assert.equal(
+    res.body.constraints.maxTotalMargin,
+    10_000,
+    "plan sizing should expose the current $10,000 hard margin cap"
+  );
   assert.equal(
     res.body.plans[0].market.mid,
     100
