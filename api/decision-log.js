@@ -1107,6 +1107,244 @@ function matchingRows(
   );
 }
 
+function hasText(value) {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0
+  );
+}
+
+function approximatelyEqual(
+  left,
+  right
+) {
+  const a = suppliedNumber(left);
+  const b = suppliedNumber(right);
+
+  if (a == null || b == null) {
+    return false;
+  }
+
+  return (
+    Math.abs(a - b) <=
+    Math.max(
+      0.01,
+      Math.max(
+        Math.abs(a),
+        Math.abs(b)
+      ) * 1e-6
+    )
+  );
+}
+
+function verifiedPreplannedScaleIn(
+  riskContext,
+  plan,
+  openPositions,
+  existingMargin,
+  now
+) {
+  const entries =
+    riskContext
+      ?.preplannedFuturesEntries;
+
+  if (
+    !Array.isArray(entries) ||
+    openPositions.length !== 1
+  ) {
+    return null;
+  }
+
+  const matches = entries.filter(
+    (entry) =>
+      entry &&
+      entry.coin === plan.coin &&
+      entry.side === plan.side &&
+      entry.positionBucket ===
+        `futures:${plan.coin}`
+  );
+
+  if (matches.length !== 1) {
+    return null;
+  }
+
+  const entryPlan = matches[0];
+  const createdAt =
+    suppliedNumber(
+      entryPlan.createdAt
+    );
+  const totalMarginUsd =
+    suppliedNumber(
+      entryPlan.totalMarginUsd
+    );
+  const leverage =
+    suppliedNumber(
+      entryPlan.leverage
+    );
+  const commonStop =
+    suppliedNumber(
+      entryPlan.commonStop
+    );
+  const position =
+    openPositions[0];
+  const openedAt =
+    suppliedNumber(
+      position.openedAt
+    );
+  const positionEntry =
+    suppliedNumber(
+      position.entry
+    );
+  const levels =
+    entryPlan.levels;
+
+  if (
+    !hasText(entryPlan.planId) ||
+    createdAt == null ||
+    openedAt == null ||
+    createdAt >= openedAt ||
+    openedAt > now ||
+    totalMarginUsd == null ||
+    totalMarginUsd <= 0 ||
+    totalMarginUsd >
+      MAX_TOTAL_MARGIN ||
+    leverage == null ||
+    !approximatelyEqual(
+      leverage,
+      plan.leverage
+    ) ||
+    commonStop == null ||
+    !approximatelyEqual(
+      commonStop,
+      plan?.risk?.stop
+    ) ||
+    !hasText(
+      entryPlan
+        .invalidationCondition
+    ) ||
+    !hasText(
+      entryPlan
+        .cancelRemainingCondition
+    ) ||
+    position.side !== plan.side ||
+    positionEntry == null ||
+    positionEntry <= 0 ||
+    !Array.isArray(levels) ||
+    levels.length < 2
+  ) {
+    return null;
+  }
+
+  let plannedMargin = 0;
+  let filledMargin = 0;
+  let filledQuantity = 0;
+  let filledNotional = 0;
+  let candidateMatches = 0;
+
+  for (const level of levels) {
+    const levelEntry =
+      suppliedNumber(level?.entry);
+    const quantity =
+      suppliedNumber(
+        level?.quantity
+      );
+    const levelMargin =
+      suppliedNumber(
+        level?.marginUsd
+      );
+    const status =
+      level?.status;
+
+    if (
+      levelEntry == null ||
+      levelEntry <= 0 ||
+      quantity == null ||
+      quantity <= 0 ||
+      levelMargin == null ||
+      levelMargin <= 0 ||
+      ![
+        "FILLED",
+        "PENDING",
+        "CANCELED",
+      ].includes(status) ||
+      Math.abs(
+        levelEntry * quantity -
+        levelMargin * leverage
+      ) > Math.max(
+        0.01,
+        leverage
+      )
+    ) {
+      return null;
+    }
+
+    plannedMargin += levelMargin;
+
+    if (status === "FILLED") {
+      const filledAt =
+        suppliedNumber(
+          level.filledAt
+        );
+
+      if (
+        filledAt == null ||
+        filledAt < createdAt ||
+        filledAt > now
+      ) {
+        return null;
+      }
+
+      filledMargin += levelMargin;
+      filledQuantity += quantity;
+      filledNotional +=
+        levelEntry * quantity;
+    }
+
+    if (
+      status === "PENDING" &&
+      approximatelyEqual(
+        levelEntry,
+        plan?.entry?.ideal
+      ) &&
+      approximatelyEqual(
+        levelMargin,
+        plan?.margin
+      ) &&
+      approximatelyEqual(
+        levelEntry * quantity,
+        plan?.positionNotional
+      )
+    ) {
+      candidateMatches += 1;
+    }
+  }
+
+  if (
+    filledQuantity <= 0 ||
+    candidateMatches !== 1 ||
+    !approximatelyEqual(
+      plannedMargin,
+      totalMarginUsd
+    ) ||
+    !approximatelyEqual(
+      filledMargin,
+      existingMargin
+    ) ||
+    !approximatelyEqual(
+      filledNotional /
+        filledQuantity,
+      positionEntry
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    planId:
+      entryPlan.planId,
+  };
+}
+
 function buildOrderCandidate(
   plan,
   riskContext,
@@ -1159,6 +1397,9 @@ function buildOrderCandidate(
     );
   const marginUsd =
     n(plan?.margin);
+  let scaleInPlan = null;
+  let entryMode =
+    "NEW_POSITION";
 
   if (
     accountBalanceUsd == null ||
@@ -1282,6 +1523,19 @@ function buildOrderCandidate(
       );
     }
 
+    if (openPositions.length) {
+      entryMode =
+        "POSITION_ADD";
+      scaleInPlan =
+        verifiedPreplannedScaleIn(
+          riskContext,
+          plan,
+          openPositions,
+          existingMargin,
+          now
+        );
+    }
+
     for (const position of openPositions) {
       if (
         position.side !== "LONG" &&
@@ -1315,13 +1569,22 @@ function buildOrderCandidate(
           "open_position_pnl_unknown"
         );
       } else if (
-        unrealizedPnlUsd < 0
+        unrealizedPnlUsd < 0 &&
+        !scaleInPlan
       ) {
         blockReasons.push(
           "adding_to_losing_position"
         );
+        blockReasons.push(
+          "unplanned_loss_addition"
+        );
       }
     }
+  }
+
+  if (scaleInPlan) {
+    entryMode =
+      "PREPLANNED_SCALE_IN";
   }
 
   if (recentExits == null) {
@@ -1417,6 +1680,10 @@ function buildOrderCandidate(
       TIME_STOP,
     positionBucket:
       `futures:${plan.coin}`,
+    entryMode,
+    scaleInPlanId:
+      scaleInPlan?.planId ??
+      null,
     status:
       uniqueReasons.length
         ? "BLOCK"
