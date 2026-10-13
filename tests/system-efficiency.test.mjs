@@ -2841,8 +2841,123 @@ async function verifyFuturesRiskGate() {
   );
   assert.ok(
     losingAdd.blockReasons.includes(
+      "unplanned_loss_addition"
+    )
+  );
+  assert.ok(
+    losingAdd.blockReasons.includes(
       "coin_margin_limit_exceeded"
     )
+  );
+
+  const plannedScaleInRes = makeRes();
+  const plannedCandidate =
+    safeRes.body.saved
+      .orderCandidates[0];
+  const plannedNow = Date.now();
+  const existingEntry = 90;
+  const existingMargin = 1000;
+  const leverage =
+    plannedCandidate.leverage;
+
+  await handler(
+    {
+      url: "/api/decision-log",
+      body: {
+        riskContext: {
+          accountBalanceUsd: 50000,
+          dailyLossUsd: 0,
+          currentPrices: {
+            BTC: {
+              price: 100,
+              asOf: plannedNow,
+            },
+          },
+          openFuturesPositions: [
+            {
+              coin: "BTC",
+              side: "LONG",
+              entry: existingEntry,
+              openedAt:
+                plannedNow -
+                60 * 60 * 1000,
+              marginUsd:
+                existingMargin,
+              unrealizedPnlUsd: -10,
+              positionBucket:
+                "futures:BTC",
+            },
+          ],
+          recentFuturesExits: [],
+          preplannedFuturesEntries: [
+            {
+              planId:
+                "btc-plan-before-first-fill",
+              coin: "BTC",
+              side: "LONG",
+              positionBucket:
+                "futures:BTC",
+              createdAt:
+                plannedNow -
+                2 * 60 * 60 * 1000,
+              leverage,
+              totalMarginUsd:
+                existingMargin +
+                plannedCandidate.marginUsd,
+              commonStop:
+                plannedCandidate.stop,
+              invalidationCondition:
+                "close_below_common_stop",
+              cancelRemainingCondition:
+                "thesis_invalid_or_4h_close",
+              levels: [
+                {
+                  entry: existingEntry,
+                  quantity:
+                    existingMargin *
+                    leverage /
+                    existingEntry,
+                  marginUsd:
+                    existingMargin,
+                  status: "FILLED",
+                  filledAt:
+                    plannedNow -
+                    60 * 60 * 1000,
+                },
+                {
+                  entry:
+                    plannedCandidate.entry,
+                  quantity:
+                    plannedCandidate.notionalUsd /
+                    plannedCandidate.entry,
+                  marginUsd:
+                    plannedCandidate.marginUsd,
+                  status: "PENDING",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    plannedScaleInRes
+  );
+
+  const plannedScaleIn =
+    plannedScaleInRes.body.saved
+      .orderCandidates[0];
+  assert.equal(
+    plannedScaleIn.status,
+    "ELIGIBLE",
+    `a fully fixed scale-in plan created before the first fill should remain eligible: ${JSON.stringify(plannedScaleIn.blockReasons)}`
+  );
+  assert.equal(
+    plannedScaleIn.entryMode,
+    "PREPLANNED_SCALE_IN"
+  );
+  assert.equal(
+    plannedScaleIn.scaleInPlanId,
+    "btc-plan-before-first-fill"
   );
 
   const reversalRes = makeRes();
