@@ -47,6 +47,7 @@ async function getJSON(path) {
     INTERNAL_TIMEOUT_MS
   );
   let r;
+  let text;
 
   try {
     r = await fetch(
@@ -56,6 +57,7 @@ async function getJSON(path) {
         signal: controller.signal,
       }
     );
+    text = await r.text();
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
@@ -67,9 +69,6 @@ async function getJSON(path) {
   } finally {
     clearTimeout(timeout);
   }
-
-  const text =
-    await r.text();
 
   if (!r.ok) {
     throw new Error(

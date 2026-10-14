@@ -3580,6 +3580,83 @@ async function verifyPlanInternalTimeout() {
   );
 }
 
+async function verifyPlanInternalBodyTimeout() {
+  process.env.PLAN_INTERNAL_TIMEOUT_MS =
+    "25";
+
+  let bodyReadAborted = false;
+
+  globalThis.fetch = async (
+    _url,
+    options = {}
+  ) => ({
+    ok: true,
+    status: 200,
+    text: () =>
+      new Promise((_, reject) => {
+        const abort = () => {
+          bodyReadAborted = true;
+          reject(
+            options.signal.reason ??
+              new DOMException(
+                "aborted",
+                "AbortError"
+              )
+          );
+        };
+
+        if (options.signal.aborted) {
+          abort();
+        } else {
+          options.signal.addEventListener(
+            "abort",
+            abort,
+            { once: true }
+          );
+        }
+      }),
+  });
+
+  const { default: handler } =
+    await freshImport(
+      "api/plan.js",
+      "internal-body-timeout"
+    );
+  const res = makeRes();
+  const startedAt = performance.now();
+
+  await Promise.race([
+    handler(
+      {
+        url: "/api/plan",
+      },
+      res
+    ),
+    new Promise((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "plan internal body timeout was not enforced"
+            )
+          ),
+        500
+      )
+    ),
+  ]);
+
+  assert.equal(res.statusCode, 500);
+  assert.match(
+    res.body.error,
+    /\/api\/rank timeout after 25ms/
+  );
+  assert.equal(bodyReadAborted, true);
+  assert.ok(
+    performance.now() - startedAt < 500,
+    "plan should not wait indefinitely for a stalled internal response body"
+  );
+}
+
 async function verifyPlanReusesRankSnapshot() {
   const requests = [];
   const momentumWindow = {
@@ -3764,6 +3841,7 @@ test(
       await verifyRankPersistenceSingleBatch();
       await verifyRankUpstreamTimeout();
       await verifyPlanInternalTimeout();
+      await verifyPlanInternalBodyTimeout();
       await verifyPlanReusesRankSnapshot();
       await verifyDecisionAvoidsPlanSelfCall();
     } finally {
