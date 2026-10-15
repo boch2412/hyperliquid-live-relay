@@ -833,7 +833,7 @@ async function quote(coin) {
       );
     }
 
-    return r.json();
+    return await r.json();
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
