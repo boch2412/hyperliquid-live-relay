@@ -334,7 +334,9 @@ async function verifyPersistenceRedisQuotaFallback() {
   assert.equal(redisCalls, callsAfterFirst);
 }
 
-async function verifySnapshotCoverageAndConcurrency() {
+async function verifySnapshotCoverageAndConcurrency(
+  downstreamMode = "json"
+) {
   const token = "qstash-test-token";
   process.env.UPSTASH_QSTASH_TOKEN = token;
   process.env.STORAGE_REDIS_REST_URL =
@@ -437,6 +439,11 @@ async function verifySnapshotCoverageAndConcurrency() {
       value.endsWith("/api/persist") ||
       value.endsWith("/api/decision-log")
     ) {
+      if (downstreamMode !== "json") {
+        return new Response("downstream body", {
+          status: downstreamMode === "http-error" ? 503 : 200,
+        });
+      }
       return response({ ok: true });
     }
 
@@ -446,7 +453,7 @@ async function verifySnapshotCoverageAndConcurrency() {
   const { default: handler } =
     await freshImport(
       "api/snapshot.js",
-      "coverage"
+      `coverage-${downstreamMode}`
     );
 
   const supplied = createHash("sha256")
@@ -466,6 +473,14 @@ async function verifySnapshotCoverageAndConcurrency() {
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.ok, true);
+  const expectedDownstream =
+    downstreamMode === "http-error"
+      ? { ok: false, status: 503, error: "downstream body" }
+      : downstreamMode === "plain"
+        ? { ok: true, raw: "downstream body" }
+        : { ok: true };
+  assert.deepEqual(res.body.persistence, expectedDownstream);
+  assert.deepEqual(res.body.decisionLog, expectedDownstream);
   assert.equal(res.body.watchlist.length, 36);
   assert.equal(res.body.savedCount, 36);
   assert.equal(quoteCoins.length, 36);
@@ -551,7 +566,10 @@ async function verifySnapshotLockSkipsDownstreamWork() {
   assert.equal(downstreamCalls, 0);
 }
 
-async function verifySnapshotDownstreamTimeout() {
+async function verifySnapshotDownstreamTimeout(
+  stalledPath = "/api/persist",
+  stallBody = false
+) {
   const token =
     "qstash-downstream-timeout-token";
   process.env.UPSTASH_QSTASH_TOKEN = token;
@@ -562,7 +580,7 @@ async function verifySnapshotDownstreamTimeout() {
   process.env.SNAPSHOT_DOWNSTREAM_TIMEOUT_MS =
     "25";
 
-  let persistAborted = false;
+  let downstreamAborted = false;
 
   globalThis.fetch = async (url, options = {}) => {
     const value = String(url);
@@ -611,10 +629,10 @@ async function verifySnapshotDownstreamTimeout() {
       });
     }
 
-    if (value.endsWith("/api/persist")) {
-      return new Promise((_, reject) => {
+    if (value.endsWith(stalledPath)) {
+      const stalled = () => new Promise((_, reject) => {
         const abort = () => {
-          persistAborted = true;
+          downstreamAborted = true;
           reject(
             options.signal?.reason ??
               new DOMException(
@@ -634,9 +652,16 @@ async function verifySnapshotDownstreamTimeout() {
           );
         }
       });
+
+      return stallBody
+        ? { ok: true, status: 200, text: stalled }
+        : stalled();
     }
 
-    if (value.endsWith("/api/decision-log")) {
+    if (
+      value.endsWith("/api/persist") ||
+      value.endsWith("/api/decision-log")
+    ) {
       return response({ ok: true });
     }
 
@@ -646,7 +671,7 @@ async function verifySnapshotDownstreamTimeout() {
   const { default: handler } =
     await freshImport(
       "api/snapshot.js",
-      "downstream-timeout"
+      `downstream-timeout-${stalledPath}-${stallBody}`
     );
   const supplied = createHash("sha256")
     .update(token)
@@ -680,9 +705,9 @@ async function verifySnapshotDownstreamTimeout() {
   assert.equal(res.statusCode, 500);
   assert.match(
     res.body.error,
-    /\/api\/persist timeout after 25ms/
+    new RegExp(`${stalledPath} timeout after 25ms`)
   );
-  assert.equal(persistAborted, true);
+  assert.equal(downstreamAborted, true);
   assert.ok(
     performance.now() - startedAt < 500,
     "snapshot should not wait indefinitely for downstream persistence"
@@ -3965,8 +3990,16 @@ test(
       await verifyPersistenceRedisTimeout();
       await verifyPersistenceRedisQuotaFallback();
       await verifySnapshotCoverageAndConcurrency();
+      await verifySnapshotCoverageAndConcurrency("plain");
+      await verifySnapshotCoverageAndConcurrency("http-error");
       await verifySnapshotLockSkipsDownstreamWork();
       await verifySnapshotDownstreamTimeout();
+      await verifySnapshotDownstreamTimeout(
+        "/api/persist", true
+      );
+      await verifySnapshotDownstreamTimeout(
+        "/api/decision-log", true
+      );
       await verifySnapshotRankTimeout();
       await verifySnapshotRankBodyTimeout();
       await verifySnapshotQuoteTimeout();
