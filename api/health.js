@@ -15,6 +15,7 @@ async function postInfo(payload) {
     API_TIMEOUT_MS
   );
   let r;
+  let text;
 
   try {
     r = await fetch(HL_INFO, {
@@ -24,6 +25,7 @@ async function postInfo(payload) {
       cache: "no-store",
       signal: controller.signal,
     });
+    text = await r.text();
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
@@ -36,7 +38,6 @@ async function postInfo(payload) {
     clearTimeout(timeout);
   }
 
-  const text = await r.text();
   let data = null;
 
   try {
