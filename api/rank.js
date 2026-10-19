@@ -1287,8 +1287,10 @@ persistenceScore,
           }
 
           if (
-            x?.quality != null &&
-            Number(x.quality) < 0.7
+            x?.components?.quality != null &&
+            Number(
+              x.components.quality
+            ) < 0.7
           ) {
             upgradeConditions.push(
               "dataQuality>=0.70"
