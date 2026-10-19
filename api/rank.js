@@ -1198,6 +1198,116 @@ persistenceScore,
       3
     );
 
+  // Keep the strict actionable gate unchanged, but expose near-miss
+  // setups so downstream day-trade guidance can say what is missing
+  // instead of collapsing every non-actionable scan into NO_EDGE.
+  const candidateCoins =
+    new Set(
+      candidates.map(
+        (x) => x.coin
+      )
+    );
+
+  const conditionalCandidates =
+    deep
+      .filter(
+        (x) => {
+          if (
+            !x?.coin ||
+            candidateCoins.has(
+              x.coin
+            )
+          ) {
+            return false;
+          }
+
+          const execution =
+            Number(
+              x
+                ?.executionQuality
+                ?.score
+            ) || 0;
+
+          const confidence =
+            Number(
+              x?.confidence
+            ) || 0;
+
+          const magnitude =
+            Math.abs(
+              Number(
+                x?.compositeScore
+              ) || 0
+            );
+
+          return (
+            execution >= 0.7 &&
+            confidence >= 45 &&
+            magnitude >= 0.4
+          );
+        }
+      )
+      .slice(
+        0,
+        3
+      )
+      .map(
+        (x) => {
+          const upgradeConditions = [];
+
+          if (
+            Number(
+              x?.confidence
+            ) < 60
+          ) {
+            upgradeConditions.push(
+              "confidence>=60"
+            );
+          }
+
+          if (
+            (
+              x
+                ?.executionQuality
+                ?.score ?? 0
+            ) < 0.7
+          ) {
+            upgradeConditions.push(
+              "executionQuality>=0.70"
+            );
+          }
+
+          if (
+            x?.bias ===
+            "NEUTRAL"
+          ) {
+            upgradeConditions.push(
+              "directional_bias_confirmed"
+            );
+          }
+
+          if (
+            x?.components?.quality != null &&
+            Number(
+              x.components.quality
+            ) < 0.7
+          ) {
+            upgradeConditions.push(
+              "dataQuality>=0.70"
+            );
+          }
+
+          return {
+            ...x,
+            grade:
+              "WATCH",
+            timeHorizon:
+              "DAYTRADE",
+            upgradeConditions,
+          };
+        }
+      );
+
   return {
     ok: true,
 
@@ -1273,6 +1383,11 @@ persistenceScore,
     },
 
     candidates,
+
+    conditionalCandidates,
+
+    nearCandidates:
+      conditionalCandidates,
 
     top10:
       deep.slice(
