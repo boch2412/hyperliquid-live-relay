@@ -1297,13 +1297,44 @@ persistenceScore,
             );
           }
 
+          const shortTerm =
+            x?.shortTerm ?? null;
+
           return {
             ...x,
             grade:
-              "WATCH",
+              shortTerm?.daytradeGrade ===
+              "A"
+                ? "A"
+                : "WATCH",
             timeHorizon:
               "DAYTRADE",
-            upgradeConditions,
+            daytradeGrade:
+              shortTerm?.daytradeGrade ??
+              "WATCH",
+            daytradeChecksPassed:
+              shortTerm
+                ?.daytradeChecksPassed ??
+              null,
+            daytradeChecksTotal:
+              shortTerm
+                ?.daytradeChecksTotal ??
+              null,
+            missingChecks:
+              shortTerm
+                ?.missingChecks ??
+              [],
+            upgradeConditions:
+              [
+                ...new Set([
+                  ...upgradeConditions,
+                  ...(
+                    shortTerm
+                      ?.upgradeConditions ??
+                    []
+                  ),
+                ]),
+              ],
           };
         }
       );
@@ -1901,6 +1932,193 @@ function structureConflict(
   return conflicts;
 }
 
+function shortTermAssessment(intel, execution, quality) {
+  const checks = [];
+  const missingChecks = [];
+
+  const m15 =
+    n(intel?.live?.momentum?.m15?.returnPct);
+  const m60 =
+    n(intel?.live?.momentum?.m60?.returnPct);
+
+  const direction =
+    m15 != null &&
+    m60 != null &&
+    Math.abs(m15) >= 0.03 &&
+    Math.abs(m60) >= 0.03 &&
+    Math.sign(m15) === Math.sign(m60)
+      ? Math.sign(m60)
+      : 0;
+
+  if (m15 == null || m60 == null) {
+    missingChecks.push("m15_m60_direction");
+  } else {
+    checks.push({
+      name: "m15_m60_direction",
+      passed: direction !== 0,
+    });
+  }
+
+  const history60 =
+    intel?.history?.windows?.m60;
+  const history15 =
+    intel?.history?.windows?.m15;
+  const historyWindow =
+    history60?.ready
+      ? history60
+      : (
+          history15?.ready
+            ? history15
+            : null
+        );
+
+  if (
+    !historyWindow ||
+    n(historyWindow?.pricePct) == null ||
+    n(historyWindow?.oiPct) == null
+  ) {
+    missingChecks.push("price_oi_alignment");
+  } else {
+    const priceMove =
+      n(historyWindow.pricePct);
+    const oiMove =
+      n(historyWindow.oiPct);
+
+    checks.push({
+      name: "price_oi_alignment",
+      passed:
+        direction !== 0 &&
+        Math.sign(priceMove) === direction &&
+        oiMove >= 0,
+    });
+  }
+
+  const funding =
+    n(intel?.live?.context?.funding);
+
+  if (funding == null) {
+    missingChecks.push("funding_not_overheated");
+  } else {
+    const overheatedLong =
+      direction > 0 &&
+      funding >= 0.00015;
+    const overheatedShort =
+      direction < 0 &&
+      funding <= -0.00015;
+
+    checks.push({
+      name: "funding_not_overheated",
+      passed:
+        !overheatedLong &&
+        !overheatedShort,
+    });
+  }
+
+  const top5 =
+    n(
+      intel?.live?.orderBook
+        ?.top5?.imbalance
+    );
+  const top20 =
+    n(
+      intel?.live?.orderBook
+        ?.top20?.imbalance
+    );
+
+  if (
+    top5 == null ||
+    top20 == null
+  ) {
+    missingChecks.push("orderbook_alignment");
+  } else {
+    const bookDirection =
+      Math.sign(
+        top5 * 1.25 +
+        top20 * 0.75
+      );
+
+    checks.push({
+      name: "orderbook_alignment",
+      passed:
+        direction !== 0 &&
+        bookDirection === direction,
+    });
+  }
+
+  checks.push({
+    name: "execution_quality",
+    passed:
+      execution?.score >= 0.7,
+  });
+
+  checks.push({
+    name: "data_quality",
+    passed:
+      quality >= 0.7,
+  });
+
+  // These need richer candle/volume and cross-market inputs than rank.js
+  // currently owns. Keep them UNKNOWN instead of counting missing data
+  // as a failed signal.
+  missingChecks.push(
+    "pullback_or_breakout_retest",
+    "volume_expansion",
+    "external_market_filter"
+  );
+
+  const passed =
+    checks.filter(
+      (x) => x.passed
+    ).length;
+  const total =
+    checks.length;
+
+  let grade = "NO_EDGE";
+
+  if (
+    passed >= 5 &&
+    execution?.score >= 0.7 &&
+    quality >= 0.7 &&
+    direction !== 0
+  ) {
+    grade = "A";
+  } else if (
+    passed >= 3 &&
+    direction !== 0
+  ) {
+    grade = "WATCH";
+  }
+
+  const upgradeConditions =
+    checks
+      .filter(
+        (x) => !x.passed
+      )
+      .map(
+        (x) => x.name
+      );
+
+  return {
+    timeHorizon: "DAYTRADE",
+    daytradeGrade: grade,
+    direction:
+      direction > 0
+        ? "LONG"
+        : (
+            direction < 0
+              ? "SHORT"
+              : "NEUTRAL"
+          ),
+    daytradeChecksPassed: passed,
+    daytradeChecksTotal: total,
+    checks,
+    missingChecks:
+      [...new Set(missingChecks)],
+    upgradeConditions:
+      [...new Set(upgradeConditions)],
+  };
+}
+
 function evaluate(intel) {
   const vol =
     estimateVolatility(intel);
@@ -1932,6 +2150,13 @@ function evaluate(intel) {
 
   const execution =
     executionQuality(intel);
+
+  const shortTerm =
+    shortTermAssessment(
+      intel,
+      execution,
+      quality
+    );
 
   const agreement =
     agreementScore(intel);
@@ -2078,6 +2303,19 @@ function evaluate(intel) {
     volatility: vol,
 
     executionQuality: execution,
+    shortTerm,
+    timeHorizon:
+      shortTerm.timeHorizon,
+    daytradeGrade:
+      shortTerm.daytradeGrade,
+    daytradeChecksPassed:
+      shortTerm.daytradeChecksPassed,
+    daytradeChecksTotal:
+      shortTerm.daytradeChecksTotal,
+    missingChecks:
+      shortTerm.missingChecks,
+    upgradeConditions:
+      shortTerm.upgradeConditions,
 marketSnapshot: {
   price: {
     bid:
