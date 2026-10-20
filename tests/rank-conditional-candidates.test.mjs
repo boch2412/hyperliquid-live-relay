@@ -22,7 +22,7 @@ test("rank screener exposes conditional daytrade candidates without changing str
   );
   assert.match(
     source,
-    /grade:\s*"WATCH"/
+    /grade:\s*shortTerm\?\.daytradeGrade\s*===\s*"A"\s*\?\s*"A"\s*:\s*"WATCH"/
   );
   assert.match(
     source,
