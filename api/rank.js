@@ -958,26 +958,39 @@ function screenerFinalScore(
   );
 }
 
+function normalizeDeepLimit(
+  requestedLimit
+) {
+  if (
+    requestedLimit == null ||
+    String(requestedLimit).trim() === ""
+  ) {
+    return DEFAULT_DEEP_LIMIT;
+  }
+
+  const parsed = Number(
+    requestedLimit
+  );
+
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_DEEP_LIMIT;
+  }
+
+  return Math.max(
+    5,
+    Math.min(
+      MAX_DEEP_LIMIT,
+      Math.floor(parsed)
+    )
+  );
+}
+
 async function runUniverseScreener(
   requestedLimit
 ) {
   const limit =
-    Math.max(
-      5,
-      Math.min(
-        MAX_DEEP_LIMIT,
-        Number.isFinite(
-          Number(
-            requestedLimit
-          )
-        )
-          ? Math.floor(
-              Number(
-                requestedLimit
-              )
-            )
-          : DEFAULT_DEEP_LIMIT
-      )
+    normalizeDeepLimit(
+      requestedLimit
     );
 
   const universe =
