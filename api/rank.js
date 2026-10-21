@@ -1948,11 +1948,17 @@ function structureConflict(
 function shortTermAssessment(intel, execution, quality) {
   const checks = [];
   const missingChecks = [];
+  // Do not let Number(null/"") turn absent short-term evidence into zero.
+  // Keep the legacy swing numeric conversion and scoring untouched.
+  const number = (value) =>
+    value == null || value === "" || typeof value === "boolean"
+      ? null
+      : n(value);
 
   const m15 =
-    n(intel?.live?.momentum?.m15?.returnPct);
+    number(intel?.live?.momentum?.m15?.returnPct);
   const m60 =
-    n(intel?.live?.momentum?.m60?.returnPct);
+    number(intel?.live?.momentum?.m60?.returnPct);
 
   const direction =
     m15 != null &&
@@ -1963,14 +1969,9 @@ function shortTermAssessment(intel, execution, quality) {
       ? Math.sign(m60)
       : 0;
 
-  if (m15 == null || m60 == null) {
-    missingChecks.push("m15_m60_direction");
-  } else {
-    checks.push({
-      name: "m15_m60_direction",
-      passed: direction !== 0,
-    });
-  }
+  // signal.js supplies rolling 1m-candle windows, not confirmed 15m/1h
+  // bars. Preserve the observed direction, but do not certify this group.
+  missingChecks.push("m15_m60_direction");
 
   const history60 =
     intel?.history?.windows?.m60;
@@ -1987,15 +1988,16 @@ function shortTermAssessment(intel, execution, quality) {
 
   if (
     !historyWindow ||
-    n(historyWindow?.pricePct) == null ||
-    n(historyWindow?.oiPct) == null
+    number(historyWindow?.pricePct) == null ||
+    number(historyWindow?.oiPct) == null ||
+    direction === 0
   ) {
     missingChecks.push("price_oi_alignment");
   } else {
     const priceMove =
-      n(historyWindow.pricePct);
+      number(historyWindow.pricePct);
     const oiMove =
-      n(historyWindow.oiPct);
+      number(historyWindow.oiPct);
 
     checks.push({
       name: "price_oi_alignment",
@@ -2007,9 +2009,9 @@ function shortTermAssessment(intel, execution, quality) {
   }
 
   const funding =
-    n(intel?.live?.context?.funding);
+    number(intel?.live?.context?.funding);
 
-  if (funding == null) {
+  if (funding == null || direction === 0) {
     missingChecks.push("funding_not_overheated");
   } else {
     const overheatedLong =
@@ -2028,47 +2030,31 @@ function shortTermAssessment(intel, execution, quality) {
   }
 
   const top5 =
-    n(
+    number(
       intel?.live?.orderBook
         ?.top5?.imbalance
     );
   const top20 =
-    n(
+    number(
       intel?.live?.orderBook
         ?.top20?.imbalance
     );
 
   if (
     top5 == null ||
-    top20 == null
+    top20 == null ||
+    direction === 0
   ) {
     missingChecks.push("orderbook_alignment");
   } else {
-    const bookDirection =
-      Math.sign(
-        top5 * 1.25 +
-        top20 * 0.75
-      );
-
     checks.push({
       name: "orderbook_alignment",
       passed:
         direction !== 0 &&
-        bookDirection === direction,
+        Math.sign(top5) === direction &&
+        Math.sign(top20) === direction,
     });
   }
-
-  checks.push({
-    name: "execution_quality",
-    passed:
-      execution?.score >= 0.7,
-  });
-
-  checks.push({
-    name: "data_quality",
-    passed:
-      quality >= 0.7,
-  });
 
   // These need richer candle/volume and cross-market inputs than rank.js
   // currently owns. Keep them UNKNOWN instead of counting missing data
@@ -2079,6 +2065,13 @@ function shortTermAssessment(intel, execution, quality) {
     "external_market_filter"
   );
 
+  for (const check of checks) {
+    check.status = check.passed ? "PASS" : "FAIL";
+  }
+  for (const name of missingChecks) {
+    checks.push({ name, passed: null, status: "UNKNOWN" });
+  }
+
   const passed =
     checks.filter(
       (x) => x.passed
@@ -2086,12 +2079,18 @@ function shortTermAssessment(intel, execution, quality) {
   const total =
     checks.length;
 
-  let grade = "NO_EDGE";
+  // Execution/data quality are separate gates, never extra signal groups.
+  // No confirmed 4h non-adverse evidence is exposed by the current source.
+  const evidenceComplete = missingChecks.length === 0;
+  const confirmedTimeframes = false;
+  let grade = missingChecks.length ? "UNKNOWN" : "NO_EDGE";
 
   if (
     passed >= 5 &&
     execution?.score >= 0.7 &&
     quality >= 0.7 &&
+    evidenceComplete &&
+    confirmedTimeframes &&
     direction !== 0
   ) {
     grade = "A";
@@ -2111,6 +2110,14 @@ function shortTermAssessment(intel, execution, quality) {
         (x) => x.name
       );
 
+  upgradeConditions.push(
+    ...missingChecks,
+    "confirmed_m15_m60_required",
+    "h4_non_adverse_required"
+  );
+  if (!(execution?.score >= 0.7)) upgradeConditions.push("execution_quality");
+  if (!(quality >= 0.7)) upgradeConditions.push("data_quality");
+
   return {
     timeHorizon: "DAYTRADE",
     daytradeGrade: grade,
@@ -2125,6 +2132,12 @@ function shortTermAssessment(intel, execution, quality) {
     daytradeChecksPassed: passed,
     daytradeChecksTotal: total,
     checks,
+    dataQuality: {
+      status: quality < 0.7 ? "DEGRADED" : "INCOMPLETE",
+      score: quality,
+      confirmedTimeframes: "UNKNOWN",
+      h4NonAdverse: "UNKNOWN",
+    },
     missingChecks:
       [...new Set(missingChecks)],
     upgradeConditions:
