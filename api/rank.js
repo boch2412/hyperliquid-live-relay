@@ -1211,12 +1211,31 @@ persistenceScore,
       3
     );
 
+  // Keep the legacy `candidates` array as the strict swing-compatible
+  // selection. Day-trade consumers must use this separately gated list so
+  // a strong swing score cannot bypass the 5/7 short-term evidence gate.
+  const daytradeCandidates =
+    deep
+      .filter(
+        isDaytradeTrade
+      )
+      .slice(
+        0,
+        3
+      );
+
   // Keep the strict actionable gate unchanged, but expose near-miss
   // setups so downstream day-trade guidance can say what is missing
   // instead of collapsing every non-actionable scan into NO_EDGE.
   const candidateCoins =
     new Set(
       candidates.map(
+        (x) => x.coin
+      )
+    );
+  const daytradeCandidateCoins =
+    new Set(
+      daytradeCandidates.map(
         (x) => x.coin
       )
     );
@@ -1228,6 +1247,9 @@ persistenceScore,
           if (
             !x?.coin ||
             candidateCoins.has(
+              x.coin
+            ) ||
+            daytradeCandidateCoins.has(
               x.coin
             )
           ) {
@@ -1427,6 +1449,8 @@ persistenceScore,
     },
 
     candidates,
+
+    daytradeCandidates,
 
     conditionalCandidates,
 
@@ -2143,6 +2167,23 @@ function shortTermAssessment(intel, execution, quality) {
     upgradeConditions:
       [...new Set(upgradeConditions)],
   };
+}
+
+function isDaytradeTrade(result) {
+  const shortTerm =
+    result?.shortTerm;
+
+  return (
+    shortTerm?.daytradeGrade === "A" &&
+    shortTerm?.daytradeChecksPassed >= 5 &&
+    shortTerm?.daytradeChecksTotal === 7 &&
+    (
+      result
+        ?.executionQuality
+        ?.score ?? 0
+    ) >= 0.7 &&
+    shortTerm?.dataQuality?.status === "NORMAL"
+  );
 }
 
 function evaluate(intel) {
