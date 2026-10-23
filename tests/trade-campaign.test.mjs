@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 
 import handler, {
   aggregateCampaign,
-} from "../api/trade-campaign.js";
+} from "../lib/trade-campaign.js";
+
+import decisionLogHandler from "../api/decision-log.js";
 
 function input() {
   return {
@@ -155,7 +157,7 @@ test("rejects duplicate fills, over-closes, and entry fills after closing begins
   );
 });
 
-test("endpoint is POST-only and returns validation failures without side effects", () => {
+test("library handler is POST-only and the existing decision endpoint exposes an opt-in mode", async () => {
   const makeRes = () => ({
     statusCode: null,
     headers: {},
@@ -185,4 +187,22 @@ test("endpoint is POST-only and returns validation failures without side effects
   );
   assert.equal(postRes.statusCode, 200);
   assert.equal(postRes.body.ok, true);
+
+  const routedRes = makeRes();
+  await decisionLogHandler(
+    {
+      method: "POST",
+      body: {
+        action: "aggregate_campaign",
+        campaign: input(),
+      },
+    },
+    routedRes
+  );
+  assert.equal(routedRes.statusCode, 200);
+  assert.equal(routedRes.body.ok, true);
+  assert.equal(
+    routedRes.body.campaign.campaignCount,
+    1
+  );
 });

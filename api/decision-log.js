@@ -1,3 +1,5 @@
+import tradeCampaignHandler from "../lib/trade-campaign.js";
+
 const COINS = [
   "BTC",
   "SUI",
@@ -2034,6 +2036,19 @@ export default async function handler(
     "Cache-Control",
     "no-store"
   );
+
+  if (
+    req.method === "POST" &&
+    req.body?.action === "aggregate_campaign"
+  ) {
+    return tradeCampaignHandler(
+      {
+        method: "POST",
+        body: req.body.campaign,
+      },
+      res
+    );
+  }
 
   try {
     const evaluations = [];
