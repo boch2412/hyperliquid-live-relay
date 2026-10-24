@@ -1004,13 +1004,16 @@ async function fetchDownstream(path) {
   );
 
   try {
-    return await fetch(
+    const r = await fetch(
       `${BASE}${path}`,
       {
         cache: "no-store",
         signal: controller.signal,
       }
     );
+    const text = await r.text();
+
+    return { ok: r.ok, status: r.status, text };
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
@@ -1029,7 +1032,7 @@ async function saveDecisionLog() {
     "/api/decision-log"
   );
 
-  const text = await r.text();
+  const text = r.text;
 
   if (!r.ok) {
     return {
@@ -1055,7 +1058,7 @@ async function saveRankPersistence() {
     "/api/persist"
   );
 
-  const text = await r.text();
+  const text = r.text;
 
   if (!r.ok) {
     return {
