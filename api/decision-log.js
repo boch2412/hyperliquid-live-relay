@@ -2050,6 +2050,23 @@ export default async function handler(
     );
   }
 
+  if (
+    req.method === "POST" &&
+    req.body?.action === "assess_position_plan"
+  ) {
+    return tradeCampaignHandler(
+      {
+        method: "POST",
+        body: {
+          action: "assess_position_plan",
+          positionPlan:
+            req.body.positionPlan,
+        },
+      },
+      res
+    );
+  }
+
   try {
     const evaluations = [];
 
