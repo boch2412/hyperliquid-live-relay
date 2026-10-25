@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import handler, {
   aggregateCampaign,
+  assessPositionPlan,
 } from "../lib/trade-campaign.js";
 
 import decisionLogHandler from "../api/decision-log.js";
@@ -157,6 +158,183 @@ test("rejects duplicate fills, over-closes, and entry fills after closing begins
   );
 });
 
+test("keeps the reported NEAR ladder unknown when order quantities and stop coverage are unverified", () => {
+  const assessment = assessPositionPlan({
+    planId: "tria-near-20261024",
+    instrument: "NEAR",
+    timeHorizon: "swing",
+    positionSide: "LONG",
+    riskBucketHint: "crypto-beta-long",
+    accountEquityUsd: 50_000,
+    currentPosition: {
+      quantity: 825,
+      avgEntry: 4.57501,
+      markPrice: 4.64215,
+      marginUsd: 382.85,
+      leverage: 10,
+    },
+    pendingEntries: [
+      4.5,
+      4.45,
+      4.4,
+      4.35,
+      4.3,
+      4.25,
+      4.2,
+    ].map((price, index) => ({
+      orderId: null,
+      price,
+      quantity: null,
+      confirmed: true,
+      reduceOnly: null,
+      cancelOnStopConfirmed: null,
+      sourceIndex: index,
+    })),
+    protectiveStop: {
+      confirmed: null,
+      stopPrice: 4.05,
+      quantity: null,
+      reduceOnly: null,
+    },
+  });
+
+  assert.equal(assessment.currentQuantity, 825);
+  assert.equal(assessment.currentAvgEntry, 4.57501);
+  assert.equal(assessment.currentEntryNotionalUsd, 3774.38325);
+  assert.equal(assessment.currentMarkNotionalUsd, 3829.77375);
+  assert.equal(assessment.pendingEntries.count, 7);
+  assert.equal(assessment.pendingEntries.knownQuantityCount, 0);
+  assert.equal(assessment.plannedQuantity, null);
+  assert.equal(assessment.plannedAvgEntry, null);
+  assert.equal(assessment.plannedMarginUsd, null);
+  assert.equal(assessment.maxLossUsd, null);
+  assert.equal(assessment.slCoverage.status, "UNKNOWN");
+  assert.equal(assessment.postStopReentryRisk, "UNKNOWN");
+  assert.equal(assessment.dataQuality.status, "INCOMPLETE");
+  assert.ok(
+    assessment.dataQuality.missingFields.includes(
+      "pendingEntries[].quantity"
+    )
+  );
+  assert.ok(
+    assessment.warnings.includes(
+      "post_stop_reentry_risk_unverified"
+    )
+  );
+});
+
+test("separates a complete ladder margin cap from stop-loss risk and detects post-stop re-entry", () => {
+  const assessment = assessPositionPlan({
+    planId: "synthetic-complete-ladder",
+    instrument: "TEST",
+    timeHorizon: "swing",
+    positionSide: "LONG",
+    riskBucketHint: "crypto-beta-long",
+    accountEquityUsd: 50_000,
+    currentPosition: {
+      quantity: 10,
+      avgEntry: 100,
+      markPrice: 100,
+      marginUsd: 100,
+      leverage: 10,
+    },
+    pendingEntries: [
+      {
+        orderId: "entry-1",
+        price: 95,
+        quantity: 10,
+        confirmed: true,
+        reduceOnly: false,
+        cancelOnStopConfirmed: true,
+      },
+      {
+        orderId: "entry-2",
+        price: 90,
+        quantity: 20,
+        confirmed: true,
+        reduceOnly: false,
+        cancelOnStopConfirmed: false,
+      },
+    ],
+    protectiveStop: {
+      confirmed: true,
+      stopPrice: 80,
+      quantity: 40,
+      reduceOnly: true,
+    },
+    estimatedCosts: {
+      entryFeesUsd: 5,
+      exitFeesUsd: 5,
+      slippageUsd: 10,
+      fundingCostUsd: 2,
+    },
+    riskLimits: {
+      marginCapUsd: 10_000,
+      maxLossUsd: 500,
+    },
+  });
+
+  assert.equal(assessment.plannedQuantity, 40);
+  assert.equal(assessment.plannedNotionalUsd, 3750);
+  assert.equal(assessment.plannedAvgEntry, 93.75);
+  assert.equal(assessment.plannedMarginUsd, 375);
+  assert.equal(assessment.stopPriceRiskUsd, 550);
+  assert.equal(assessment.maxLossUsd, 572);
+  assert.equal(assessment.maxLossPctEquity, 1.144);
+  assert.equal(assessment.slCoverage.status, "FULL");
+  assert.equal(assessment.postStopReentryRisk, "DETECTED");
+  assert.equal(assessment.limitChecks.margin.status, "PASS");
+  assert.equal(assessment.limitChecks.maxLoss.status, "BLOCK");
+  assert.ok(
+    assessment.warnings.includes(
+      "pending_entries_can_reopen_after_stop"
+    )
+  );
+});
+
+test("does not publish max loss when the stop cannot cover the complete ladder", () => {
+  const assessment = assessPositionPlan({
+    planId: "partial-stop",
+    instrument: "TEST",
+    timeHorizon: "swing",
+    positionSide: "LONG",
+    accountEquityUsd: 50_000,
+    currentPosition: {
+      quantity: 10,
+      avgEntry: 100,
+      leverage: 10,
+    },
+    pendingEntries: [{
+      orderId: "entry-1",
+      price: 90,
+      quantity: 10,
+      confirmed: true,
+      reduceOnly: false,
+      cancelOnStopConfirmed: true,
+    }],
+    protectiveStop: {
+      confirmed: true,
+      stopPrice: 80,
+      quantity: 10,
+      reduceOnly: true,
+    },
+    estimatedCosts: {
+      entryFeesUsd: 1,
+      exitFeesUsd: 1,
+      slippageUsd: 1,
+      fundingCostUsd: 1,
+    },
+  });
+
+  assert.equal(assessment.slCoverage.status, "PARTIAL");
+  assert.equal(assessment.stopPriceRiskUsd, 300);
+  assert.equal(assessment.maxLossUsd, null);
+  assert.equal(
+    assessment.limitChecks.maxLoss.status,
+    "UNKNOWN"
+  );
+});
+
 test("library handler is POST-only and the existing decision endpoint exposes an opt-in mode", async () => {
   const makeRes = () => ({
     statusCode: null,
@@ -204,5 +382,32 @@ test("library handler is POST-only and the existing decision endpoint exposes an
   assert.equal(
     routedRes.body.campaign.campaignCount,
     1
+  );
+
+  const positionRes = makeRes();
+  await decisionLogHandler(
+    {
+      method: "POST",
+      body: {
+        action: "assess_position_plan",
+        positionPlan: {
+          planId: "route-test",
+          instrument: "NEAR",
+          timeHorizon: "swing",
+          positionSide: "LONG",
+          currentPosition: {
+            quantity: 1,
+            avgEntry: 4.5,
+          },
+        },
+      },
+    },
+    positionRes
+  );
+  assert.equal(positionRes.statusCode, 200);
+  assert.equal(positionRes.body.ok, true);
+  assert.equal(
+    positionRes.body.positionPlan.planId,
+    "route-test"
   );
 });
