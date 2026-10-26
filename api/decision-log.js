@@ -2067,6 +2067,25 @@ export default async function handler(
     );
   }
 
+  if (
+    req.method === "POST" &&
+    req.body?.action ===
+      "reconcile_position_snapshots"
+  ) {
+    return tradeCampaignHandler(
+      {
+        method: "POST",
+        body: {
+          action:
+            "reconcile_position_snapshots",
+          positionSnapshots:
+            req.body.positionSnapshots,
+        },
+      },
+      res
+    );
+  }
+
   try {
     const evaluations = [];
 

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import handler, {
   aggregateCampaign,
   assessPositionPlan,
+  reconcilePositionSnapshots,
 } from "../lib/trade-campaign.js";
 
 import decisionLogHandler from "../api/decision-log.js";
@@ -335,6 +336,100 @@ test("does not publish max loss when the stop cannot cover the complete ladder",
   );
 });
 
+test("newer verified position snapshots supersede old quantities without becoming current when stale", () => {
+  const result = reconcilePositionSnapshots({
+    evaluatedAt: "2026-10-26T10:00:00+09:00",
+    freshnessLimitMs: 60 * 60 * 1000,
+    snapshots: [
+      {
+        snapshotId: "near-new-screen",
+        instrument: "NEAR",
+        observedAt: "2026-10-25T00:19:00+09:00",
+        sourceType: "user_screen",
+        campaignId: "near-swing-20261024",
+        quantity: 15_962,
+        positionSide: "LONG",
+        avgEntry: 4.33537,
+        marginUsd: 6_966.61,
+      },
+      {
+        snapshotId: "near-old-screen",
+        instrument: "NEAR",
+        observedAt: "2026-10-24T11:30:00+09:00",
+        sourceType: "user_screen",
+        campaignId: "near-swing-20261024",
+        quantity: 825,
+        positionSide: "LONG",
+        avgEntry: 4.57501,
+        marginUsd: 382.85,
+      },
+    ],
+  });
+
+  const near = result.instruments[0];
+  assert.equal(near.instrument, "NEAR");
+  assert.equal(
+    near.latestObservedPosition.snapshotId,
+    "near-new-screen"
+  );
+  assert.equal(near.latestObservedPosition.quantity, 15_962);
+  assert.deepEqual(
+    near.supersededSnapshotIds,
+    ["near-old-screen"]
+  );
+  assert.equal(near.currentStatus, "STALE");
+  assert.equal(near.currentPosition, null);
+  assert.ok(
+    near.warnings.includes(
+      "latest_position_snapshot_is_stale"
+    )
+  );
+});
+
+test("a closed BTC short and later BTC long remain separate explicit campaigns", () => {
+  const result = reconcilePositionSnapshots({
+    evaluatedAt: "2026-10-25T00:20:00+09:00",
+    freshnessLimitMs: 60 * 60 * 1000,
+    snapshots: [
+      {
+        snapshotId: "btc-short-close",
+        instrument: "BTC",
+        observedAt: "2026-10-23T15:12:00+09:00",
+        sourceType: "exchange_position",
+        campaignId: "btc-short-20261023",
+        quantity: 0,
+      },
+      {
+        snapshotId: "btc-long-screen",
+        instrument: "BTC",
+        observedAt: "2026-10-25T00:19:00+09:00",
+        sourceType: "user_screen",
+        campaignId: "btc-long-20261025",
+        quantity: 1.47169,
+        positionSide: "LONG",
+        avgEntry: 80_250,
+        marginUsd: 2_922.59,
+      },
+    ],
+  });
+
+  const btc = result.instruments[0];
+  assert.equal(btc.currentStatus, "CURRENT");
+  assert.equal(btc.currentPosition.positionSide, "LONG");
+  assert.equal(
+    btc.campaignTransition.status,
+    "CONFIRMED_SEPARATE"
+  );
+  assert.equal(
+    btc.campaignTransition.previousCampaignId,
+    "btc-short-20261023"
+  );
+  assert.equal(
+    btc.campaignTransition.currentCampaignId,
+    "btc-long-20261025"
+  );
+});
+
 test("library handler is POST-only and the existing decision endpoint exposes an opt-in mode", async () => {
   const makeRes = () => ({
     statusCode: null,
@@ -409,5 +504,37 @@ test("library handler is POST-only and the existing decision endpoint exposes an
   assert.equal(
     positionRes.body.positionPlan.planId,
     "route-test"
+  );
+
+  const snapshotsRes = makeRes();
+  await decisionLogHandler(
+    {
+      method: "POST",
+      body: {
+        action: "reconcile_position_snapshots",
+        positionSnapshots: {
+          evaluatedAt: "2026-10-25T00:20:00+09:00",
+          freshnessLimitMs: 60 * 60 * 1000,
+          snapshots: [{
+            snapshotId: "route-position",
+            instrument: "BTC",
+            observedAt: "2026-10-25T00:19:00+09:00",
+            sourceType: "user_screen",
+            campaignId: "btc-long-20261025",
+            quantity: 1,
+            positionSide: "LONG",
+            avgEntry: 80_250,
+          }],
+        },
+      },
+    },
+    snapshotsRes
+  );
+  assert.equal(snapshotsRes.statusCode, 200);
+  assert.equal(snapshotsRes.body.ok, true);
+  assert.equal(
+    snapshotsRes.body.positionSnapshots.instruments[0]
+      .currentStatus,
+    "CURRENT"
   );
 });
