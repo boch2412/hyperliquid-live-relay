@@ -430,6 +430,54 @@ test("a closed BTC short and later BTC long remain separate explicit campaigns",
   );
 });
 
+test("keeps a later BTC swing separate from a closed daytrade without inventing its size", () => {
+  const result = reconcilePositionSnapshots({
+    evaluatedAt: "2026-10-28T00:30:00+09:00",
+    freshnessLimitMs: 60 * 60 * 1000,
+    snapshots: [
+      {
+        snapshotId: "btc-daytrade-close-20261028",
+        instrument: "BTC",
+        observedAt: "2026-10-28T00:21:00+09:00",
+        sourceType: "user_report",
+        campaignId: "btc-daytrade-20261027",
+        timeHorizon: "daytrade",
+        quantity: 0,
+      },
+      {
+        snapshotId: "btc-swing-screen-20261028",
+        instrument: "BTC",
+        observedAt: "2026-10-28T00:27:00+09:00",
+        sourceType: "user_screen",
+        campaignId: "btc-swing-20261028",
+        timeHorizon: "swing",
+        quantity: null,
+        positionSide: "LONG",
+        avgEntry: 79_693.3,
+        marginUsd: 5_153.38,
+        leverage: 40,
+      },
+    ],
+  });
+
+  const btc = result.instruments[0];
+  assert.equal(btc.currentStatus, "CURRENT");
+  assert.equal(btc.currentPosition.campaignId, "btc-swing-20261028");
+  assert.equal(btc.currentPosition.timeHorizon, "swing");
+  assert.equal(btc.currentPosition.positionSide, "LONG");
+  assert.equal(btc.currentPosition.quantity, null);
+  assert.equal(btc.dataQuality.status, "INCOMPLETE");
+  assert.ok(btc.dataQuality.missingFields.includes("quantity"));
+  assert.equal(
+    btc.campaignTransition.status,
+    "CONFIRMED_SEPARATE"
+  );
+  assert.equal(
+    btc.campaignTransition.previousCampaignId,
+    "btc-daytrade-20261027"
+  );
+});
+
 test("library handler is POST-only and the existing decision endpoint exposes an opt-in mode", async () => {
   const makeRes = () => ({
     statusCode: null,
